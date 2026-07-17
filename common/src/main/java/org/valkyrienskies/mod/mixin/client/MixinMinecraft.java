@@ -1,0 +1,201 @@
+package org.valkyrienskies.mod.mixin.client;
+
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.MultiPlayerGameMode;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.server.IntegratedServer;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.InteractionResult;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.valkyrienskies.core.internal.world.VsiClientShipWorld;
+import org.valkyrienskies.core.internal.world.VsiPipeline;
+import org.valkyrienskies.mod.common.IShipObjectWorldClientCreator;
+import org.valkyrienskies.mod.common.IShipObjectWorldClientProvider;
+import org.valkyrienskies.mod.common.IShipObjectWorldServerProvider;
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod;
+import org.valkyrienskies.mod.common.util.EntityDragger;
+import org.valkyrienskies.mod.mixin.accessors.network.ConnectionAccessor;
+import org.valkyrienskies.mod.mixinducks.client.MinecraftDuck;
+
+@Mixin(Minecraft.class)
+public abstract class MixinMinecraft
+    implements MinecraftDuck, IShipObjectWorldClientProvider, IShipObjectWorldClientCreator {
+
+    @Unique
+    private static final Logger log = LogManager.getLogger("VS2 MixinMinecraft");
+    @Unique
+    private static long lastLog = System.currentTimeMillis();
+    @Unique
+    private static long vs$lastNetworkingAddressLog = 0L;
+
+    @Shadow
+    private boolean pause;
+
+    @Shadow
+    @Nullable
+    public abstract IntegratedServer getSingleplayerServer();
+
+    @Shadow
+    public ClientLevel level;
+
+    @Unique
+    private HitResult originalCrosshairTarget;
+
+    @Override
+    public void vs$setOriginalCrosshairTarget(final HitResult originalCrosshairTarget) {
+        this.originalCrosshairTarget = originalCrosshairTarget;
+    }
+
+    @Override
+    public HitResult vs$getOriginalCrosshairTarget() {
+        return originalCrosshairTarget;
+    }
+
+    @Unique
+    private VsiClientShipWorld shipObjectWorld = null;
+
+    @WrapOperation(
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/multiplayer/MultiPlayerGameMode;useItemOn(Lnet/minecraft/client/player/LocalPlayer;Lnet/minecraft/world/InteractionHand;Lnet/minecraft/world/phys/BlockHitResult;)Lnet/minecraft/world/InteractionResult;"
+        ),
+        method = "startUseItem"
+    )
+    private InteractionResult useOriginalCrosshairForBlockPlacement(final MultiPlayerGameMode instance,
+        final LocalPlayer localPlayer, final InteractionHand interactionHand,
+        final BlockHitResult blockHitResult, final Operation<InteractionResult> useItemOn) {
+
+        final HitResult originalCrosshairTargetCopy = originalCrosshairTarget;
+        if (originalCrosshairTargetCopy instanceof BlockHitResult) {
+            return useItemOn.call(instance, localPlayer, interactionHand,
+                originalCrosshairTargetCopy);
+        } else {
+            return useItemOn.call(instance, localPlayer, interactionHand,
+                blockHitResult);
+        }
+    }
+
+    @NotNull
+    @Override
+    public VsiClientShipWorld getShipObjectWorld() {
+        final VsiClientShipWorld shipObjectWorldCopy = shipObjectWorld;
+
+        if (shipObjectWorldCopy == null) {
+            if (lastLog + 5000 < System.currentTimeMillis()) {
+                lastLog = System.currentTimeMillis();
+                log.warn("Requested getShipObjectWorld() but failed returning dummy world",
+                    new IllegalStateException("shipObjectWorld is null"));
+            }
+
+            return ValkyrienSkiesMod.getVsCore().getDummyShipWorldClient();
+        }
+
+        return shipObjectWorldCopy;
+    }
+
+    @Shadow
+    public abstract ClientPacketListener getConnection();
+
+    @Inject(
+        method = "tick",
+        at = @At("RETURN")
+    )
+    public void postTick(final CallbackInfo ci) {
+        // Tick the ship world and then drag entities
+        if (!pause && shipObjectWorld != null && level != null && getConnection() != null) {
+            final var connection = getConnection().getConnection();
+            final var remoteAddress = connection.getRemoteAddress();
+            final var channel = ((ConnectionAccessor) connection).valkyrienskies$getChannel();
+            final var localAddress = channel != null ? channel.localAddress() : null;
+            final var networkingAddress = remoteAddress != null && remoteAddress.toString().startsWith("local:")
+                ? localAddress
+                : remoteAddress;
+            if (false && vs$lastNetworkingAddressLog + 5000L < System.currentTimeMillis()) {
+                vs$lastNetworkingAddressLog = System.currentTimeMillis();
+                log.info(
+                    "tickNetworking networkingAddress={} remoteAddress={} localAddress={}",
+                    networkingAddress,
+                    remoteAddress,
+                    localAddress
+                );
+            }
+            shipObjectWorld.tickNetworking(networkingAddress);
+            shipObjectWorld.postTick();
+            // The drag sweep visits every rendered entity; skip it when there are no ships.
+            if (shipObjectWorld.getAllShips().size() > 0) {
+                EntityDragger.INSTANCE.dragEntitiesWithShips(level.entitiesForRendering(), false);
+            }
+        }
+    }
+
+    @Inject(
+        method = "runTick",
+        at = @At(value = "TAIL")
+    )
+    public void setGamePause(final boolean pauseOnly, final CallbackInfo ci) {
+        final IShipObjectWorldServerProvider provider = (IShipObjectWorldServerProvider) getSingleplayerServer();
+        if (provider != null) {
+            final VsiPipeline pipeline = provider.getVsPipeline();
+            if (pipeline != null) {
+                pipeline.setArePhysicsRunning(!this.pause);
+            }
+        }
+    }
+
+    /* TODO no longer needed
+    @Inject(
+        method = "setCurrentServer",
+        at = @At("HEAD")
+    )
+    public void preSetCurrentServer(final ServerData serverData, final CallbackInfo ci) {
+        ValkyrienSkiesMod.getVsCore().setClientUsesUDP(false);
+    }
+
+     */
+
+    @Override
+    public void createShipObjectWorldClient() {
+        if (shipObjectWorld != null) {
+            throw new IllegalStateException("shipObjectWorld was not null when it should be null?");
+        }
+        shipObjectWorld = ValkyrienSkiesMod
+            .getVsCoreClient()
+            .newShipWorldClient();
+    }
+
+    @Override
+    public void deleteShipObjectWorldClient() {
+        final VsiClientShipWorld shipObjectWorldCopy = shipObjectWorld;
+        if (shipObjectWorldCopy == null) {
+            throw new IllegalStateException("shipObjectWorld was null when it should be not null?");
+        }
+        shipObjectWorldCopy.destroyWorld();
+        shipObjectWorld = null;
+    }
+
+    @Inject(
+        method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V",
+        at = @At("RETURN")
+    )
+    private void postDisconnect(final Screen screen, final boolean bl, final CallbackInfo ci) {
+        if (shipObjectWorld != null) {
+            deleteShipObjectWorldClient();
+        }
+    }
+}

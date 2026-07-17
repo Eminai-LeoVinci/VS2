@@ -1,0 +1,51 @@
+modLoader = "kotlinforforge"
+loaderVersion = "[5.3,)"
+issueTrackerURL = "https://github.com/ValkyrienSkies/Valkyrien-Skies-2/issues"
+license = "Apache-2.0"
+
+[[mods]]
+modId = "valkyrienskies"
+version = "${version}"
+displayName = "Valkyrien Skies 2"
+authors = ["Tri0de", "Rubydesic"]
+description = '''
+Moving blocks with physics :)
+'''
+logoFile = "icon.png"
+
+[[mixins]]
+config = "valkyrienskies-common.mixins.json"
+
+[[mixins]]
+config = "valkyrienskies-forge.mixins.json"
+
+[[dependencies.valkyrienskies]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.206,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.valkyrienskies]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1]"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.valkyrienskies]]
+modId = "create"
+type = "optional"
+versionRange = "[6.0.9,6.1.0)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.valkyrienskies]]
+modId = "computercraft"
+type = "optional"
+versionRange = "[1.115.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+["lithium:options"]
+mixin.ai.poi = false
