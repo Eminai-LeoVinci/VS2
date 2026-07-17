@@ -1,0 +1,71 @@
+package org.valkyrienskies.mod.fabric.common
+
+import io.netty.buffer.ByteBuf
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
+import net.minecraft.network.FriendlyByteBuf
+import net.minecraft.resources.ResourceLocation
+import net.minecraft.server.level.ServerPlayer
+import org.valkyrienskies.core.internal.hooks.VsiCoreHooksIn
+import org.valkyrienskies.core.internal.world.VsiPlayer
+import org.valkyrienskies.mod.common.ValkyrienSkiesMod
+import org.valkyrienskies.mod.common.networking.VSPacketFragmenter
+import org.valkyrienskies.mod.common.playerWrapper
+import org.valkyrienskies.mod.common.util.MinecraftPlayer
+
+/**
+ * Registers VS with the Fabric networking API.
+ */
+class VSFabricNetworking(
+    private val isClient: Boolean
+) {
+    private val VS_PACKET_ID = ResourceLocation(ValkyrienSkiesMod.MOD_ID, "vs_packet")
+    private val VS_FRAGMENT_ID = ResourceLocation(ValkyrienSkiesMod.MOD_ID, "vs_fragment")
+
+    private fun registerClientNetworking(hooks: VsiCoreHooksIn) {
+        ClientPlayNetworking.registerGlobalReceiver(VS_PACKET_ID) { _, _, buf, _ ->
+            hooks.onReceiveClient(buf)
+        }
+        ClientPlayNetworking.registerGlobalReceiver(VS_FRAGMENT_ID) { _, _, buf, _ ->
+            val assembled = VSPacketFragmenter.onReceiveFragment(buf)
+            if (assembled != null) {
+                hooks.onReceiveClient(assembled)
+            }
+        }
+    }
+
+    fun register(hooks: VsiCoreHooksIn) {
+        if (isClient) {
+            registerClientNetworking(hooks)
+        }
+
+        ServerPlayNetworking.registerGlobalReceiver(VS_PACKET_ID) { _, player, _, buf, _ ->
+            hooks.onReceiveServer(buf, player.playerWrapper)
+        }
+        ServerPlayNetworking.registerGlobalReceiver(VS_FRAGMENT_ID) { _, player, _, buf, _ ->
+            val assembled = VSPacketFragmenter.onReceiveFragment(buf)
+            if (assembled != null) {
+                hooks.onReceiveServer(assembled, player.playerWrapper)
+            }
+        }
+    }
+
+    fun sendToClient(data: ByteBuf, player: VsiPlayer) {
+        // Synthetic ship observers (ShipActivationManager's always-active mechanism) are VsiPlayers
+        // with no client connection. vs-core may still try to push ship sync to them, so drop any
+        // non-real player here instead of ClassCast-ing.
+        val serverPlayer = (player as? MinecraftPlayer)?.player as? ServerPlayer ?: return
+
+        if (VSPacketFragmenter.needsSplitting(data)) {
+            for (fragment in VSPacketFragmenter.split(data)) {
+                ServerPlayNetworking.send(serverPlayer, VS_FRAGMENT_ID, FriendlyByteBuf(fragment))
+            }
+        } else {
+            ServerPlayNetworking.send(serverPlayer, VS_PACKET_ID, FriendlyByteBuf(data))
+        }
+    }
+
+    fun sendToServer(data: ByteBuf) {
+        ClientPlayNetworking.send(VS_PACKET_ID, FriendlyByteBuf(data))
+    }
+}

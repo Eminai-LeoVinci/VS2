@@ -1,0 +1,375 @@
+package org.valkyrienskies.mod.mixin.client.renderer;
+
+import com.llamalad7.mixinextras.injector.ModifyReturnValue;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.mojang.blaze3d.vertex.PoseStack;
+import net.minecraft.client.Camera;
+import net.minecraft.client.CameraType;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.GameRenderer;
+import net.minecraft.client.renderer.LevelRenderer;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
+import net.minecraft.world.phys.Vec3;
+import org.joml.Matrix4f;
+import org.joml.Vector3d;
+import org.joml.Vector3dc;
+import org.joml.primitives.AABBdc;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.Unique;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.valkyrienskies.core.api.ships.ClientShip;
+import org.valkyrienskies.core.internal.world.VsiClientShipWorld;
+import org.valkyrienskies.mod.client.IVSCamera;
+import org.valkyrienskies.mod.client.ShipCameraZoom;
+import org.valkyrienskies.mod.client.ShipMountPerspective;
+import org.valkyrienskies.mod.common.IShipObjectWorldClientProvider;
+import org.valkyrienskies.mod.common.entity.ShipMountedToData;
+import org.valkyrienskies.mod.common.VSGameUtilsKt;
+import org.valkyrienskies.mod.common.util.EntityDragger;
+import org.valkyrienskies.mod.common.util.EntityDraggingInformation;
+import org.valkyrienskies.mod.common.util.EntityRenderPosition;
+import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider;
+import org.valkyrienskies.mod.common.world.RaycastUtilsKt;
+import org.valkyrienskies.mod.mixinducks.client.MinecraftDuck;
+
+import java.util.IdentityHashMap;
+import java.util.Map;
+
+@Mixin(GameRenderer.class)
+public abstract class MixinGameRenderer {
+
+    @Shadow
+    @Final
+    private Minecraft minecraft;
+    // region Mount the camera to the ship
+    @Shadow
+    @Final
+    private Camera mainCamera;
+
+    @Shadow
+    protected abstract double getFov(Camera camera, float f, boolean bl);
+
+    @Shadow
+    public abstract Matrix4f getProjectionMatrix(double d);
+
+    @Unique
+    private final Map<Entity, EntityRenderPosition.Snapshot> vs$renderPositionSnapshots = new IdentityHashMap<>();
+
+    /**
+     * {@link Entity#pick(double, float, boolean)} except the hit pos is not transformed
+     */
+    @Unique
+    private static HitResult entityRaycastNoTransform(
+        final Entity entity, final double maxDistance, final float tickDelta, final boolean includeFluids) {
+        final Vec3 vec3d = entity.getEyePosition(tickDelta);
+        final Vec3 vec3d2 = entity.getViewVector(tickDelta);
+        final Vec3 vec3d3 = vec3d.add(vec3d2.x * maxDistance, vec3d2.y * maxDistance, vec3d2.z * maxDistance);
+        return RaycastUtilsKt.clipIncludeShips(
+            entity.level(),
+            new ClipContext(
+                vec3d,
+                vec3d3,
+                ClipContext.Block.OUTLINE,
+                includeFluids ? ClipContext.Fluid.ANY : ClipContext.Fluid.NONE,
+                entity
+            ),
+            false
+        );
+    }
+
+    @WrapOperation(
+        method = "pick",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/Entity;pick(DFZ)Lnet/minecraft/world/phys/HitResult;"
+        )
+    )
+    public HitResult modifyCrosshairTargetBlocks(final Entity receiver, final double maxDistance, final float tickDelta,
+        final boolean includeFluids, final Operation<HitResult> pick) {
+
+        HitResult result = pick.call(receiver, maxDistance, tickDelta, includeFluids);
+        HitResult noTransform;
+        if(result instanceof BlockHitResult blockHitResult) {
+            noTransform = new BlockHitResult(
+                VSGameUtilsKt.toShipRenderCoordinates(Minecraft.getInstance().level, blockHitResult.getBlockPos().getCenter(), blockHitResult.location),
+                blockHitResult.getDirection(),
+                blockHitResult.getBlockPos(),
+                blockHitResult.isInside()
+            );
+        } else noTransform = result;
+        ((MinecraftDuck) this.minecraft).vs$setOriginalCrosshairTarget(noTransform);
+        return result;
+    }
+
+    @WrapOperation(
+        method = "pick",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/phys/Vec3;distanceToSqr(Lnet/minecraft/world/phys/Vec3;)D"
+        )
+    )
+    public double correctDistanceChecks(final Vec3 instance, final Vec3 vec3, final Operation<Double> original) {
+        return VSGameUtilsKt.squaredDistanceBetweenInclShips(this.minecraft.level, instance, vec3, original);
+    }
+
+    @Inject(method = "render", at = @At("HEAD"))
+    private void preRender(final float tickDelta, final long startTime, final boolean tick, final CallbackInfo ci) {
+        final ClientLevel clientWorld = minecraft.level;
+        if (clientWorld != null) {
+            // Update ship render transforms
+            final VsiClientShipWorld shipWorld =
+                IShipObjectWorldClientProvider.class.cast(this.minecraft).getShipObjectWorld();
+            if (shipWorld == null) {
+                return;
+            }
+
+            shipWorld.updateRenderTransforms(tickDelta);
+
+            // Also update entity last tick positions, so that they interpolate correctly
+            for (final Entity entity : clientWorld.entitiesForRendering()) {
+                if (!EntityDragger.isDraggable(entity)) {
+                    continue;
+                }
+                // The position we want to render [entity] at for this frame
+                // This is set when an entity is mounted to a ship, or an entity is being dragged by a ship
+                Vector3dc entityShouldBeHere = null;
+
+                // First, try getting the ship the entity is mounted to, if one exists
+                final ShipMountedToData shipMountedToData = VSGameUtilsKt.getShipMountedToData(entity, tickDelta);
+
+                if (shipMountedToData != null) {
+                    final ClientShip shipMountedTo = (ClientShip) shipMountedToData.getShipMountedTo();
+                    // If the entity is mounted to a ship then update their position
+                    final Vector3dc passengerPos = shipMountedToData.getMountPosInShip();
+                    entityShouldBeHere = shipMountedTo.getRenderTransform().getShipToWorld()
+                        .transformPosition(passengerPos, new Vector3d());
+                    vs$renderPositionSnapshots.computeIfAbsent(entity, EntityRenderPosition::capture);
+                    EntityRenderPosition.setWithoutSectionUpdate(
+                        entity,
+                        entityShouldBeHere.x(),
+                        entityShouldBeHere.y(),
+                        entityShouldBeHere.z()
+                    );
+                    entity.xo = entityShouldBeHere.x();
+                    entity.yo = entityShouldBeHere.y();
+                    entity.zo = entityShouldBeHere.z();
+                    entity.xOld = entityShouldBeHere.x();
+                    entity.yOld = entityShouldBeHere.y();
+                    entity.zOld = entityShouldBeHere.z();
+                    continue;
+                }
+
+                final EntityDraggingInformation entityDraggingInformation =
+                    ((IEntityDraggingInformationProvider) entity).getDraggingInformation();
+                final Long lastShipStoodOn = entityDraggingInformation.getLastShipStoodOn();
+                // Then try getting [entityShouldBeHere] from [entityDraggingInformation]
+                if (lastShipStoodOn != null && entityDraggingInformation.isEntityBeingDraggedByAShip()) {
+                    final ClientShip shipObject =
+                        VSGameUtilsKt.getShipObjectWorld(clientWorld).getLoadedShips().getById(lastShipStoodOn);
+                    if (shipObject != null) {
+                        entityDraggingInformation.setCachedLastPosition(
+                            new Vector3d(entity.xo, entity.yo, entity.zo));
+                        entityDraggingInformation.setRestoreCachedLastPosition(true);
+
+                        // The velocity added to the entity by ship dragging
+                        final Vector3dc entityAddedVelocity = entityDraggingInformation.getAddedMovementLastTick();
+
+                        // The velocity of the entity before we added ship dragging
+                        final double entityMovementX = entity.getX() - entityAddedVelocity.x() - entity.xo;
+                        final double entityMovementY = entity.getY() - entityAddedVelocity.y() - entity.yo;
+                        final double entityMovementZ = entity.getZ() - entityAddedVelocity.z() - entity.zo;
+
+                        // Without ship dragging, the entity would've been here
+                        final Vector3dc entityShouldBeHerePreTransform = new Vector3d(
+                            entity.xo + entityMovementX * tickDelta,
+                            entity.yo + entityMovementY * tickDelta,
+                            entity.zo + entityMovementZ * tickDelta
+                        );
+
+                        // Move [entityShouldBeHerePreTransform] with the ship, using the prev transform and the
+                        // current render transform
+                        entityShouldBeHere = shipObject.getRenderTransform().getShipToWorldMatrix()
+                            .transformPosition(
+                                shipObject.getPrevTickShipTransform().getWorldToShipMatrix()
+                                    .transformPosition(entityShouldBeHerePreTransform, new Vector3d()));
+                    }
+                }
+
+                // Apply entityShouldBeHere, if its present
+                //
+                // Also, don't run this if [tickDelta] is too small, getting so close to dividing by 0 could mess
+                // something up
+                if (entityShouldBeHere != null && tickDelta < .99999) {
+                    // Update the entity last tick positions such that the entity's render position will be
+                    // interpolated to be [entityShouldBeHere]
+                    entity.xo = (entityShouldBeHere.x() - (entity.getX() * tickDelta)) / (1.0 - tickDelta);
+                    entity.yo = (entityShouldBeHere.y() - (entity.getY() * tickDelta)) / (1.0 - tickDelta);
+                    entity.zo = (entityShouldBeHere.z() - (entity.getZ() * tickDelta)) / (1.0 - tickDelta);
+                }
+            }
+        }
+    }
+
+    @Inject(method = "render", at = @At("TAIL"))
+    private void postRender(final float tickDelta, final long startTime, final boolean tick, final CallbackInfo ci) {
+        final ClientLevel clientWorld = minecraft.level;
+        if (clientWorld != null) {
+            vs$renderPositionSnapshots.forEach((entity, snapshot) -> snapshot.restore(entity));
+            vs$renderPositionSnapshots.clear();
+
+            // Restore the entity last tick positions that were replaced during this frame
+            for (final Entity entity : clientWorld.entitiesForRendering()) {
+                final EntityDraggingInformation vsEntity =
+                    ((IEntityDraggingInformationProvider) entity).getDraggingInformation();
+                if (vsEntity.getRestoreCachedLastPosition()) {
+                    vsEntity.setRestoreCachedLastPosition(false);
+                    final Vector3dc cachedLastPosition = vsEntity.getCachedLastPosition();
+                    if (cachedLastPosition != null) {
+                        entity.xo = cachedLastPosition.x();
+                        entity.yo = cachedLastPosition.y();
+                        entity.zo = cachedLastPosition.z();
+                    } else {
+                        System.err.println("How was cachedLastPosition was null?");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Mount the player's camera to the ship they are mounted on.
+     */
+    @WrapOperation(
+        method = "renderLevel",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/LevelRenderer;prepareCullFrustum(Lcom/mojang/blaze3d/vertex/PoseStack;Lnet/minecraft/world/phys/Vec3;Lorg/joml/Matrix4f;)V"
+        )
+    )
+    private void setupCameraWithMountedShip(final LevelRenderer instance, final PoseStack ignore, final Vec3 vec3,
+        final Matrix4f matrix4f, final Operation<Void> prepareCullFrustum, final float partialTicks,
+        final long finishTimeNano, final PoseStack matrixStack) {
+
+        // Recomputed authoritatively each frame: only the ship-mounted third-person path below sets this true
+        // (every early return that falls through to the vanilla camera leaves it false), so the scroll-zoom
+        // handler keys off exactly when MixinCamera applies the zoom multiplier.
+        ShipCameraZoom.setShipCameraActive(false);
+
+        final ClientLevel clientLevel = minecraft.level;
+        final Entity player = minecraft.player;
+        if (clientLevel == null || player == null) {
+            prepareCullFrustum.call(instance, matrixStack, vec3, matrix4f);
+            return;
+        }
+
+        final ShipMountedToData shipMountedToData = VSGameUtilsKt.getShipMountedToData(player, partialTicks);
+        if (shipMountedToData == null) {
+            prepareCullFrustum.call(instance, matrixStack, vec3, matrix4f);
+            return;
+        }
+
+        final Entity playerVehicle = player.getVehicle();
+        if (playerVehicle == null) {
+            prepareCullFrustum.call(instance, matrixStack, vec3, matrix4f);
+            return;
+        }
+
+        // Update [matrixStack] to mount the camera to the ship
+
+        final Camera camera = this.mainCamera;
+        if (camera == null) {
+            prepareCullFrustum.call(instance, matrixStack, vec3, matrix4f);
+            return;
+        }
+
+        final ClientShip clientShip = (ClientShip) shipMountedToData.getShipMountedTo();
+
+        // Ship-mount riders (helm, reconnect auto-seat, sit-down hotkey seat) get a custom F5 cycle, driven by
+        // ShipMountPerspective via the fabric start-of-tick F5 drain:
+        //   FIRST_PERSON       -> vanilla 1st person (no ship-mount, normal eye view)
+        //   ship view          -> ship-mounted 3rd person (pulled-back scroll-zoomable BEHIND-the-player view; a
+        //                         VIRTUAL slot flagged in ShipMountPerspective on top of THIRD_PERSON_BACK, so the
+        //                         player's back faces the camera -- natural, non-inverted pitch. Vanilla's
+        //                         CameraType enum can't grow a 4th value, hence the piggy-back.)
+        //   Shoulder Surfing   -> only when that mod is installed; then back to FIRST_PERSON.
+        // (The old plain THIRD_PERSON_BACK / mirrored THIRD_PERSON_FRONT stops were dropped -- the mirrored front
+        // slot is what made the ship view feel pitch-inverted.)
+        // Sitting (never happens for a plain ShipMountingEntity, kept for parity): thirdPerson follows the user's
+        // F5 state, mirror follows CameraType.isMirrored().
+        final boolean standing =
+            playerVehicle instanceof org.valkyrienskies.mod.common.entity.ShipMountingEntity;
+        final CameraType cameraType = this.minecraft.options.getCameraType();
+
+        if (standing && !ShipMountPerspective.isShipViewEngaged()) {
+            // Standing + any slot but the virtual ship view: skip ship-mount entirely so the vanilla camera (or
+            // Shoulder Surfing's, which layers on top of it) + standard prepareCullFrustum runs. The shouldRender
+            // cull bypass in MixinLevelRenderer keeps the player body visible in normal 3rd person.
+            prepareCullFrustum.call(instance, matrixStack, vec3, matrix4f);
+            return;
+        }
+
+        final boolean thirdPersonForSetup;
+        final boolean mirroredForSetup;
+        if (standing) {
+            // Only the virtual ship-view slot lands here for standing: ship-mounted behind-the-player view
+            // (scroll wheel zooms it).
+            thirdPersonForSetup = true;
+            mirroredForSetup = false;
+        } else {
+            thirdPersonForSetup = !cameraType.isFirstPerson();
+            mirroredForSetup = cameraType.isMirrored();
+        }
+
+        // Immersive ship third-person view active -> the scroll wheel zooms this camera (MixinMouseHandler).
+        ShipCameraZoom.setShipCameraActive(thirdPersonForSetup);
+        ((IVSCamera) camera).setupWithShipMounted(
+            this.minecraft.level,
+            this.minecraft.getCameraEntity() == null ? this.minecraft.player : this.minecraft.getCameraEntity(),
+            thirdPersonForSetup,
+            mirroredForSetup,
+            partialTicks,
+            clientShip,
+            shipMountedToData.getMountPosInShip()
+        );
+
+        // Camera FOV changes based on the position of the camera, so recompute FOV to account for the change of camera
+        // position.
+        final double fov = this.getFov(camera, partialTicks, true);
+
+        // Use [camera.getPosition()] instead of [vec3] because mounting the player to the ship has changed the camera
+        // position.
+        prepareCullFrustum.call(instance, matrixStack, camera.getPosition(),
+            this.getProjectionMatrix(Math.max(fov, this.minecraft.options.fov().get())));
+    }
+    // endregion
+
+    @ModifyReturnValue(method = "getDepthFar", at = @At("RETURN"))
+    public float includeShipsIn(final float originalDepth) {
+        float maxDistance = originalDepth;
+        for (final ClientShip ship : VSGameUtilsKt.getShipObjectWorld(Minecraft.getInstance()).getLoadedShips()) {
+            Vec3 cameraPos = this.mainCamera.getPosition();
+            AABBdc shipAABB = ship.getRenderAABB();
+            // find the furthest distance from the camera to the ship AABB corners
+            double furthestDistanceSq = 0;
+            double dMinX = shipAABB.minX() - cameraPos.x();  
+            double dMaxX = shipAABB.maxX() - cameraPos.x();  
+            double dMinY = shipAABB.minY() - cameraPos.y();  
+            double dMaxY = shipAABB.maxY() - cameraPos.y();  
+            double dMinZ = shipAABB.minZ() - cameraPos.z();  
+            double dMaxZ = shipAABB.maxZ() - cameraPos.z();  
+            double furthestDist = Math.sqrt(Math.max(dMinX * dMinX, dMaxX * dMaxX) + Math.max(dMinY * dMinY, dMaxY * dMaxY) + Math.max(dMinZ * dMinZ, dMaxZ * dMaxZ));  
+            maxDistance = Math.max(maxDistance, (float) furthestDist);  
+        }
+
+        return maxDistance;
+    }
+}
