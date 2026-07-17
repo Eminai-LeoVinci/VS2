@@ -1,0 +1,189 @@
+dependencies {
+    implementation(annotationProcessor("io.github.llamalad7:mixinextras-common:0.4.1"))
+
+    compileOnly 'com.google.code.findbugs:jsr305:3.0.2'
+    // We depend on fabric loader here to use the fabric @Environment annotations
+    // Do NOT use other classes from fabric loader
+    modImplementation "net.fabricmc:fabric-loader:${rootProject.fabric_loader_version}"
+
+    // Add NeoForge to the compile classpath
+    compileOnly("net.neoforged:neoforge:$rootProject.neoforge_version")
+
+    modApi("me.shedaniel.cloth:cloth-config:${cloth_config_version}")
+    modCompileOnly "fuzs.forgeconfigapiport:forgeconfigapiport-common:${rootProject.fcap_version}"
+
+    // Sodium 0.8.11 ships built with Fabric Loom 1.16.1; VS2's Architectury Loom 1.14.473
+    // rejects deps built with a newer Loom. We only need Sodium's API to compile against, so a
+    // copy with the Fabric-Loom-Version field rewritten down is kept in libs/ (gitignored,
+    // provided manually). See the note in the root build.gradle.
+    modCompileOnly(files("$rootDir/libs/sodium-fabric-0.8.11-loompatched.jar"))
+
+    // Alex Caves
+    modCompileOnly("maven.modrinth:alexs-caves:$alexscaves_version")
+
+    // vs-core
+    runtimeOnly("org.valkyrienskies.core:impl:${rootProject.vs_core_version}") {
+        exclude module: "netty-buffer"
+        exclude module: "fastutil"
+    }
+    implementation("org.valkyrienskies.core:api:${rootProject.vs_core_version}")
+    implementation("org.valkyrienskies.core:internal:${rootProject.vs_core_version}")
+    implementation("org.valkyrienskies.core:util:${rootProject.vs_core_version}")
+
+    implementation("com.google.guava:guava:31.1-jre")
+
+    // FTB Stuffs
+    //modCompileOnly("dev.ftb.mods:ftb-chunks-forge:2001.3.6") { transitive = false }
+
+    // Weather2 1.20.1
+    modCompileOnly("curse.maven:weather-storms-tornadoes-237746:5244118")
+
+    // TIS-3d
+    modCompileOnly("maven.modrinth:tis3d:${tis3d_version}")
+
+    // CC-Tweaked — disabled for 1.21.11 probe (no 1.21.11 build exists)
+    //modCompileOnly("cc.tweaked:cc-tweaked-${minecraft_version}-common:${cc_tweaked_version}")
+
+    // Dynmap
+    modCompileOnly("maven.modrinth:dynmap:${dynmap_version}")
+
+    // Hexcasting-family compat from 1.20.1 does not currently resolve on 1.21.1.
+    // The related sources are excluded below until the 1.21.1 coordinates are restored.
+
+    // Supplementaries (Moonlight Lib) — removed for the 1.21.11 port.
+    // The only code reference (mixin/mod_compat/moonlight/MixinFakeServerLevel) is excluded
+    // by the source-set rule below, so this dep was unused at build time. Keeping it as a
+    // modImplementation pulled the stale 1.20.1 Moonlight jar into dev runs, where Fabric
+    // Loader rejected it with "requires fabric 0.86.0+". Restore (and bump moonlight_version
+    // in gradle.properties) when re-enabling the compat mixin.
+    // modImplementation("maven.modrinth:moonlight:$moonlight_version")
+
+    // Common create compat,
+    // We just use a version from a platform and hope the classes exist on both versions and mixins apply correctly
+    // EMF compat
+    //todo: fix
+    modCompileOnly("curse.maven:entity-model-features-844662:5696901")
+    modCompileOnly("curse.maven:entity-texture-features-fabric-568563:5697084")
+
+    modCompileOnly("net.fabricmc.fabric-api:fabric-api:${fabric_api_version}")
+    //Common create compat,
+    //We just use a version from a platform and hope the classes exist on both versions and mixins apply correctly
+    modCompileOnly("com.simibubi.create:create-fabric:${create_fabric_version}")
+        { exclude group: 'com.github.AlphaMode', module: 'fakeconfigtoml' }
+    modCompileOnly("curse.maven:vanillin-965702:6446557")
+
+    modCompileOnly("maven.modrinth:create-utilities:${create_utilities_version}")
+    modImplementation("teamreborn:energy:${energy_version}")
+
+    //Very many players
+    modCompileOnly("curse.maven:vmp-fabric-552542:4754074")
+
+    //Bluemap fabric 1.20.1
+    modCompileOnly("curse.maven:bluemap-406463:5555756")
+
+    modCompileOnly("com.github.iPortalTeam:ImmersivePortalsMod:${immptl_version}")
+    // These older common-side compat coordinates were kept in 1.20.1, but do not resolve on 1.21.1.
+    // Platform-specific compat remains under fabric/forge where available.
+    // Sable compat — disabled for 1.21.11 probe (no 1.21.11 build exists)
+    //modCompileOnly("dev.ryanhcode.sable:sable-common-${minecraft_version}:${sable_version}")
+}
+
+architectury {
+    common(rootProject.enabled_platforms.split(","))
+}
+
+loom {
+    accessWidenerPath = file("src/main/resources/valkyrienskies-common.accesswidener")
+}
+
+sourceSets {
+    main {
+        java {
+            // 1.21.11 port: exclude third-party mod-compat mixins (those mods have no 1.21.11 builds).
+            // EXCEPTIONS: mod_compat/sodium is required (Sodium replaces the chunk renderer entirely,
+            // so ship terrain is invisible without it; ported to Sodium 0.8.11), mod_compat/voxy
+            // (Voxy 0.2.15-beta has a 1.21.11 build) carries the per-pixel ship/LOD depth occlusion, and
+            // mod_compat/iris fixes Iris's GENERIC vertex attributes (mc_Entity/at_midBlock) for ship terrain.
+            // The carve-outs must omit the trailing slash so they also match the directory itself
+            // (dir paths have no trailing slash) — otherwise Gradle prunes the whole subtree.
+            exclude {
+                it.path.contains("/mixin/mod_compat/")
+                    && !it.path.contains("/mixin/mod_compat/sodium")
+                    && !it.path.contains("/mixin/mod_compat/voxy")
+                    && !it.path.contains("/mixin/mod_compat/iris")
+            }
+            // Deferred: MixinSodiumWorldRenderer needs a Sodium 0.8 block-entity-render rewrite.
+            // Dead: RenderSectionManagerAccessor uses the removed me.jellysquid API and is unused.
+            exclude "org/valkyrienskies/mod/mixin/mod_compat/sodium/MixinSodiumWorldRenderer.java"
+            exclude "org/valkyrienskies/mod/mixin/mod_compat/sodium/RenderSectionManagerAccessor.java"
+            exclude "org/valkyrienskies/mod/compat/FlywheelEvents.java"
+            exclude "org/valkyrienskies/mod/compat/flywheel/**"
+            // Create has no 1.21.11 build; this class references Create's CopycatBlock/BlockPickInteractionAware
+            exclude "org/valkyrienskies/mod/compat/create/AirFlowClipContext.java"
+            exclude "org/valkyrienskies/mod/mixin/accessors/client/render/chunk/**"
+            exclude "org/valkyrienskies/mod/mixin/accessors/server/level/ChunkHolderAccessor.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/enchantment_table/**"
+            exclude "org/valkyrienskies/mod/mixin/feature/sculk/**"
+            // Non-core debug/polish render mixins: depend on the pre-1.21.5 render pipeline.
+            // Out of scope for helm + assembly; revisit during the render-layer port.
+            exclude "org/valkyrienskies/mod/mixin/feature/render_ship_debug_bb/**"
+            exclude "org/valkyrienskies/mod/mixin/feature/render_pathfinding/**"
+            exclude "org/valkyrienskies/mod/mixin/feature/fix_render_chunk_sorting/**"
+            exclude "org/valkyrienskies/mod/mixin/feature/render_blockentity_distance_check/**"
+            // Unregistered mixins (removed from valkyrienskies-common.mixins.json during the port,
+            // or never registered upstream): parked as source, excluded so they don't ship as dead
+            // classes. PER-FILE on purpose -- several of these packages also contain LIVE registered
+            // mixins (commands, wave_spawning, world_border, world_weather, transform_particles,
+            // ai/goal, client/player, world/level/levelgen), so directory globs would break them.
+            exclude "org/valkyrienskies/mod/mixin/feature/conduit_fix/ConduitMixin.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/fluid_camera_fix/MixinCamera.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/ship_debug_overlay/MixinDebugScreenOverlay.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/wave_spawning/MixinRaid.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/wave_spawning/MixinRaids.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/world_border/MixinLevel.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/ai/goal/bees/MixinPollinateGoal.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/commands/MixinArgumentTypeInfos.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/transform_particles/MixinLevelRenderer.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/explosions/MixinExplosion.java"
+            exclude "org/valkyrienskies/mod/mixin/client/player/MixinPlayer.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/shipyard_leashing/MixinPathfinderMob.java"
+            exclude "org/valkyrienskies/mod/mixin/feature/world_weather/MixinServerLevel.java"
+            exclude "org/valkyrienskies/mod/mixin/world/level/levelgen/MixinFlatLevelSource.java"
+            exclude "org/valkyrienskies/mod/mixin/world/level/levelgen/MixinNoiseBasedChunkGenerator.java"
+        }
+        kotlin {
+            exclude "org/valkyrienskies/mod/compat/hexcasting/**"
+            exclude "org/valkyrienskies/mod/compat/flywheel/**"
+            exclude "org/valkyrienskies/mod/client/VSPhysicsEntityModel.kt"
+            exclude "org/valkyrienskies/mod/client/VSPhysicsEntityRenderer.kt"
+            exclude "org/valkyrienskies/mod/common/entity/VSPhysicsEntity.kt"
+            exclude "org/valkyrienskies/mod/common/item/AreaAssemblerItem.kt"
+            exclude "org/valkyrienskies/mod/common/item/ConnectionCheckerItem.kt"
+            exclude "org/valkyrienskies/mod/common/item/PhysicsEntityCreatorItem.kt"
+        }
+    }
+}
+
+jar {
+    // Exclude dummy Optifine classes
+    exclude "net/optifine/**"
+}
+
+compileKotlin { doLast {
+    file(compileKotlin.destinationDirectory.get().toString() + "/META-INF/valkyrienskies-120.kotlin_module").renameTo(file(compileKotlin.destinationDirectory.get().toString() + "/META-INF/valkyrienskies-120_common.kotlin_module"))
+} }
+
+publishing {
+    publications {
+        mavenCommon(MavenPublication) {
+            groupId = "org.valkyrienskies"
+            version = project.version
+            artifactId = rootProject.archives_base_name + "-" + project.name
+            from components.java
+
+            artifact(jar) {
+                classifier 'dev'
+            }
+        }
+    }
+}

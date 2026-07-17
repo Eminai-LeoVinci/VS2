@@ -1,0 +1,30 @@
+{
+  "required": true,
+  "package": "org.valkyrienskies.mod.fabric.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "plugin": "org.valkyrienskies.mod.fabric.mixin.ValkyrienSkiesFabricMixinPlugin",
+  "mixins": [
+    "compat.cc_restitched.MixinWirelessModemPeripheral",
+    "compat.connectiblechains.MixinChainable",
+    "compat.connectiblechains.MixinChainCollisionEntity",
+    "entity.MixinContainerEntity",
+    "feature.explosions.ClipContextMixin",
+    "feature.fix_tp_ships_cross_dimension.MixinLevelChunk",
+    "feature.shipyard_entities.MixinPersistentEntitySectionManager",
+    "feature.water_in_ships_entity.MixinEntity",
+    "compat.cc_restitched.MixinSpeakerSound"
+  ],
+  "client": [
+    "compat.connectiblechains.client.MixinChainKnotEntityRenderer",
+    "compat.emf.MixinEMFAnimationEntityContext",
+    "compat.emf.MixinEMFStandAtHelm",
+    "compat.shouldersurfing.MixinSSRPerspectiveCycle",
+    "compat.sodium.MixinRenderSectionManager",
+    "feature.command_suggestion_merge.MixinClientPacketListener",
+    "feature.vs_command_passthrough.MixinClientPacketListenerPassthrough"
+  ],
+  "injectors": {
+    "defaultRequire": 0
+  },
+  "minVersion": "0.8"
+}
