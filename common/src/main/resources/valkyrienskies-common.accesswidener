@@ -1,0 +1,51 @@
+accessWidener	v2	named
+
+# Only put classes in here. For everything else use Accessor mixins
+
+# For ChunkMap, ClientChunkCache
+accessible	class	net/minecraft/client/multiplayer/ClientChunkCache$Storage
+
+# For including entities on ships getting send to the client
+accessible  class   net/minecraft/server/level/ChunkMap$TrackedEntity
+
+# For seamless chunk copies
+accessible  class   net/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection$RebuildTask
+
+# For modifying BlockHitResult.location
+# Remove final
+mutable field    net/minecraft/world/phys/HitResult  location    Lnet/minecraft/world/phys/Vec3;
+# Make the field public
+accessible field    net/minecraft/world/phys/HitResult  location    Lnet/minecraft/world/phys/Vec3;
+
+accessible  class   net/minecraft/server/level/ChunkMap$DistanceManager
+
+accessible  class   net/minecraft/world/entity/ai/behavior/AcquirePoi$JitteredLinearRetry
+
+accessible  class   net/minecraft/world/entity/animal/bee/Bee$BeePollinateGoal
+accessible  class   net/minecraft/world/entity/animal/bee/Bee$BeeEnterHiveGoal
+accessible  class   net/minecraft/world/entity/animal/bee/Bee$BeeLocateHiveGoal
+accessible  class   net/minecraft/world/entity/animal/bee/Bee$BeeGrowCropGoal
+accessible  class   net/minecraft/world/entity/animal/bee/Bee$BaseBeeGoal
+
+# For flywheel lighting engine
+mutable field   net/minecraft/world/level/lighting/LevelLightEngine   blockEngine    Lnet/minecraft/world/level/lighting/LightEngine;
+
+# For unloading shipyard chunks when teleporting across dimensions
+accessible class net/minecraft/world/level/chunk/LevelChunk$RebindableTickingBlockEntityWrapper
+accessible method net/minecraft/world/level/chunk/LevelChunk$RebindableTickingBlockEntityWrapper rebind (Lnet/minecraft/world/level/block/entity/TickingBlockEntity;)V
+
+accessible class net/minecraft/server/level/ServerLevel$EntityCallbacks
+
+# 1.21.11 port additions:
+# TicketType.register became package-private; widen so VSTicketType can declare SHIP_CHUNK.
+accessible method net/minecraft/server/level/TicketType register (Ljava/lang/String;JI)Lnet/minecraft/server/level/TicketType;
+# ServerPlayer.server field is private now; we need it from MinecraftPlayer.kt for op checks.
+accessible field net/minecraft/server/level/ServerPlayer server Lnet/minecraft/server/MinecraftServer;
+# KeyMapping.Category.register became package-private; widen so VSKeyBindings can wrap String -> Category.
+accessible method net/minecraft/client/KeyMapping$Category register (Ljava/lang/String;)Lnet/minecraft/client/KeyMapping$Category;
+# Level.isClientSide field is private now; many feature mixins read it directly.
+accessible field net/minecraft/world/level/Level isClientSide Z
+# Player.STANDING_DIMENSIONS moved to Avatar and is protected; MixinClientLevel reads it.
+accessible field net/minecraft/world/entity/Avatar STANDING_DIMENSIONS Lnet/minecraft/world/entity/EntityDimensions;
+# Camera.getPosition() was removed; widen the position field so VS render mixins can read it.
+accessible field net/minecraft/client/Camera position Lnet/minecraft/world/phys/Vec3;

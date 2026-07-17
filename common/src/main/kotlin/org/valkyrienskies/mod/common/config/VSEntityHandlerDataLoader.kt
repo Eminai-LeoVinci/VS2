@@ -1,0 +1,36 @@
+package org.valkyrienskies.mod.common.config
+
+import com.google.gson.JsonElement
+import net.minecraft.core.registries.BuiltInRegistries
+import net.minecraft.resources.Identifier
+import net.minecraft.server.packs.resources.ResourceManager
+import net.minecraft.server.packs.resources.SimpleJsonResourceReloadListener
+import net.minecraft.util.profiling.ProfilerFiller
+import org.valkyrienskies.mod.common.entity.handling.VSEntityManager
+import org.valkyrienskies.mod.util.VS_JSON_CODEC
+import org.valkyrienskies.mod.util.logger
+import org.valkyrienskies.mod.util.vsJsonListerFor
+
+object VSEntityHandlerDataLoader : SimpleJsonResourceReloadListener<JsonElement>(VS_JSON_CODEC, vsJsonListerFor("vs_entities")) {
+
+    override fun apply(
+        list: MutableMap<Identifier, JsonElement>,
+        resourceManager: ResourceManager,
+        profiler: ProfilerFiller
+    ) {
+
+        list.forEach { (l, v) ->
+            try {
+                val type = BuiltInRegistries.ENTITY_TYPE.getOptional(l).orElse(null) ?: return@forEach
+                val handler = VSEntityManager.getHandler(Identifier.parse(v.asJsonObject.get("handler").asString))
+                    ?: throw Exception("Handler not found")
+
+                VSEntityManager.pair(type, handler)
+            } catch (e: Exception) {
+                logger.error("Error loading entity handler data for entity type $l", e)
+            }
+        }
+    }
+
+    private val logger by logger()
+}

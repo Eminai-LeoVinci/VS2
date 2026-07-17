@@ -1,0 +1,261 @@
+import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
+
+buildscript {
+    // Lock plugin dependencies
+    configurations.classpath {
+        resolutionStrategy.activateDependencyLocking()
+    }
+}
+
+plugins {
+    // Needed for Forge+Fabric
+    // Get latest architectury configs from https://generate.architectury.dev/
+    // https://maven.architectury.dev/architectury-plugin/architectury-plugin.gradle.plugin/3.4.161/
+    id "architectury-plugin" version "3.4.161"
+    // https://maven.architectury.dev/dev/architectury/architectury-loom/1.9.428/
+    id "dev.architectury.loom" version "1.14.473" apply false
+    id 'io.github.juuxel.loom-vineflower' version '1.11.0' apply false
+    // Kotlin
+    id "org.jetbrains.kotlin.jvm" version "2.0.0" apply false
+    id 'com.matthewprenger.cursegradle' version '1.4.0' apply false
+    id "com.modrinth.minotaur" version "2.4.3" apply false
+}
+
+// Determine the version
+if (project.hasProperty("CustomReleaseVersion")) {
+    // Remove release/ from the version if present
+    version = project.property("CustomReleaseVersion").replaceFirst("^release/1\\.\\d+\\.\\d+/", "")
+} else {
+    String gitRevision = "git rev-parse HEAD".execute(null, project.projectDir).text.trim()
+
+    version = mod_version + "+" + gitRevision.substring(0, 10)
+}
+
+architectury {
+    minecraft = rootProject.minecraft_version
+}
+
+// Lock dependencies
+// https://docs.gradle.org/current/userguide/dependency_locking.html
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+// VS2's Sodium-compat shims compile against Sodium 0.8.11's API as a compile-only dependency at
+// libs/sodium-fabric-0.8.11-loompatched.jar (gitignored; wired up in common/ + fabric/build.gradle).
+// That jar is Sodium 0.8.11 with the single manifest field `Fabric-Loom-Version` rewritten from 1.16.1
+// down to 1.14.473 so Architectury Loom 1.14.473 will consume it (bytecode unchanged). Provide that jar
+// in libs/ before building. It is compile-only and never ships in our output; players install Sodium
+// themselves at runtime.
+
+tasks.register("updateVsCore") {
+    File versionFile = null
+    File gradleProperties = file("gradle.properties")
+
+    try {
+        def vsCoreBuild = gradle.includedBuild("vs-core")
+        versionFile = new File(vsCoreBuild.projectDir, "internal/build/version.txt")
+
+        inputs.file(versionFile)
+        outputs.file(gradleProperties)
+        dependsOn(vsCoreBuild.task(":internal:writeVersion"))
+
+        [':impl', ':api', ':internal', ':util'].each {
+            dependsOn(vsCoreBuild.task("${it}:publishToMavenLocal"))
+        }
+    } catch (UnknownDomainObjectException ignore) {}
+
+    onlyIf {
+        versionFile != null
+    }
+
+    doLast {
+        def vsCoreVersion = versionFile.text
+        def newGradleProperties = gradleProperties.text.replaceFirst("(?m)^vs_core_version=.*", "vs_core_version=" + vsCoreVersion)
+        gradleProperties.write(newGradleProperties)
+    }
+}
+
+subprojects {
+    apply plugin: "dev.architectury.loom"
+    // Apply checkstyle and ktlint to check the code style of every sub project
+    apply plugin: "org.jetbrains.kotlin.jvm"
+
+    repositories {
+        try {
+            def vsCoreBuild = gradle.includedBuild("vs-core")
+            mavenLocal {
+                content {
+                    includeGroup("org.valkyrienskies.core")
+                }
+            }
+
+            [':impl', ':api', ':internal'].each {
+                compileJava.dependsOn(vsCoreBuild.task("${it}:publishToMavenLocal"))
+            }
+        } catch (UnknownDomainObjectException ignore) {}
+
+        mavenCentral()
+        if (!project.block_external_repositories) {
+            maven {
+                url = "https://maven.realrobotix.me/master/"
+            }
+            mavenLocal()
+            maven {
+                name = "ParchmentMC"
+                url = "https://maven.parchmentmc.org"
+            }
+            maven { url = "https://cursemaven.com" }
+            maven { url = "https://maven.terraformersmc.com/releases/" } // Mod Menu
+            maven {
+                name = 'Kotlin for Forge'
+                url = 'https://thedarkcolour.github.io/KotlinForForge/'
+            }
+            maven {
+                name = 'tterrag maven'
+                url = 'https://maven.tterrag.com/'
+            }
+            maven { url = "https://modmaven.dev/" } // Twilight Forest
+            maven { url = "https://api.modrinth.com/maven" } // LazyDFU, Suggestion Tweaker, Create Big Cannons
+            maven { url = "https://maven.shedaniel.me/" } // Cloth Config, REI
+            maven { url = "https://maven.architectury.dev/" }
+            maven { url = "https://maven.createmod.net" } // Create, Ponder, Flywheel
+            maven { url = "https://maven.ithundxr.dev/mirror" } // Registrate mirror
+            maven { url = "https://mvn.devos.one/snapshots/" } // Fabric Create, Porting Lib, Forge Tags, Milk Lib
+            maven { url = "https://mvn.devos.one/releases/" }
+            maven { url = "https://raw.githubusercontent.com/Fuzss/modresources/main/maven/" } // Forge Config API Port
+            maven { url = "https://maven.cafeteria.dev/releases" } // Fake Player API
+            maven { url = "https://maven.jamieswhiteshirt.com/libs-release" } // Reach Entity Attributes
+            maven { url = "https://maven.realrobotix.me/createbigcannons/" } // Create Big Cannons
+            maven {
+                name = "CC-Tweaked"
+                url = "https://maven.squiddev.cc"
+                content {
+                    includeGroup("cc.tweaked")
+                }
+            }
+            maven {
+                name = "FTB Stuffs"
+                url = "https://maven.ftb.dev/releases"
+                content {
+                    includeGroup("dev.ftb.mods")
+                }
+            }
+            maven {
+                name = "NeoForged"
+                url = "https://maven.neoforged.net/releases"
+            }
+            maven { // Hexcasting
+                url = "https://maven.blamejared.com"
+            }
+            maven { // Hexal
+                url = uri("https://maven.hexxy.media")
+            }
+            // Jitpack is last because it's slow and should only be used as fallback.
+            maven { url = "https://jitpack.io" }
+            maven {
+                name = "Fuzs Mod Resources"
+                url = uri("https://raw.githubusercontent.com/Fuzss/modresources/main/maven/")
+            }
+            maven {
+                url = "https://maven.ryanhcode.dev/releases"
+                name = "RyanHCode Maven"
+            }
+        }
+        maven {
+            name = "Valkyrien Skies Internal"
+            url = project.vs_maven_url ?: 'https://maven.valkyrienskies.org'
+            if (project.vs_maven_username && project.vs_maven_password) {
+                credentials {
+                    username = project.vs_maven_username
+                    password = project.vs_maven_password
+                }
+            }
+        }
+    }
+
+    // Remove automatically added repos
+    if (project.block_external_repositories) {
+        repositories.removeIf {
+            def url = it.url.toString()
+            url.contains("maven.minecraftforge.net") ||
+                url.contains("maven.fabricmc.net") ||
+                url.contains("maven.architectury.dev")
+        }
+    }
+
+    dependencies {
+        minecraft "com.mojang:minecraft:${rootProject.minecraft_version}"
+        // The following line declares the mojmap mappings, you may use other mappings as well
+        mappings loom.officialMojangMappings()
+
+        compileOnly("com.google.code.findbugs:jsr305:3.0.2")
+    }
+
+    kotlin {
+        compilerOptions {
+            optIn.add("org.valkyrienskies.core.api.VsBeta")
+        }
+        // Pin the Kotlin compiler daemon to JDK 21. Without this, Gradle's
+        // toolchain auto-detection can pick up a newer JDK (e.g. JDK 25) for
+        // the Kotlin worker, and Kotlin 2.0.0's embedded IntelliJ JavaVersion
+        // parser only handles versions up to ~24 — JDK 25 crashes compileKotlin
+        // with "IllegalArgumentException: 25.0.1".
+        jvmToolchain(21)
+    }
+}
+
+allprojects {
+    apply plugin: "java"
+    apply plugin: "architectury-plugin"
+    apply plugin: "maven-publish"
+
+    // Set the base name, version, and group to the values in the gradle.properties
+    archivesBaseName = rootProject.archives_base_name
+    version = rootProject.version
+    group = rootProject.maven_group
+
+    publishing {
+        repositories {
+            if (project.vs_maven_username && project.vs_maven_password) {
+                println "Publishing to VS Maven ($version)"
+                maven {
+                    name = "VSMaven"
+                    url = project.vs_maven_url
+                    credentials {
+                        username = project.vs_maven_username
+                        password = project.vs_maven_password
+                    }
+                }
+            }
+            if (System.getenv("GITHUB_ACTOR") != null) {
+                println "Publishing to Github Packages ($version)"
+                maven {
+                    name = "GitHubPackages"
+                    url = uri("https://maven.pkg.github.com/ValkyrienSkies/Valkyrien-Skies-2")
+                    credentials {
+                        username = System.getenv("GITHUB_ACTOR")
+                        password = System.getenv("GITHUB_TOKEN")
+                    }
+                }
+            }
+        }
+    }
+
+    tasks.withType(JavaCompile) {
+        options.encoding = "UTF-8"
+
+        options.release = 21
+    }
+
+    tasks.withType(KotlinJvmCompile).configureEach {
+        kotlinOptions {
+            jvmTarget = "21"
+            freeCompilerArgs += "-Xjvm-default=all"
+        }
+    }
+
+    java {
+        withSourcesJar()
+    }
+}
