@@ -54,7 +54,6 @@ import org.valkyrienskies.mod.common.util.toJOML
 import org.valkyrienskies.mod.common.util.toJOMLD
 import org.valkyrienskies.mod.common.vsCore
 import org.valkyrienskies.mod.common.yRange
-import org.valkyrienskies.mod.util.AIR
 import org.valkyrienskies.mod.util.StructureTemplateFillFromVoxelSet
 import org.valkyrienskies.mod.util.logger
 import org.valkyrienskies.mod.util.relocateBlock
@@ -249,6 +248,13 @@ object ShipAssembler {
 
         // ========== Removing Old Blocks
         if (removeOriginal) {
+            // Single-pass removal: clear block entities and set to air in one pass.
+            // UPDATE_KNOWN_SHAPE skips neighbor shape updates during bulk removal, and
+            // UPDATE_SUPPRESS_DROPS prevents item drops. Flag 2 (UPDATE_CLIENTS) syncs to clients.
+            // The old two-pass approach (barrier then remove) triggered recursive neighbor shape
+            // updates that destroyed-with-drops the second half of two-block structures (beds,
+            // doors, tall flowers) before their first half became a barrier -- duplicating them.
+            val flags = Block.UPDATE_CLIENTS or Block.UPDATE_KNOWN_SHAPE or Block.UPDATE_SUPPRESS_DROPS or Block.UPDATE_MOVE_BY_PISTON
             for (pos in blocks) {
                 level.getBlockEntity(pos)?.let {
                     if (it is Clearable) {
@@ -260,26 +266,10 @@ object ShipAssembler {
                     // Without this, copycats still drop their items
                     level.removeBlockEntity(pos)
                 }
-
-                level.setBlock(pos, Blocks.BARRIER.defaultBlockState(), Block.UPDATE_CLIENTS)
+                level.setBlock(pos, Blocks.AIR.defaultBlockState(), flags)
             }
+            // Batch light updates after all blocks are removed
             for (pos in blocks) {
-                val block = level.getBlockState(pos)
-                level.removeBlock(pos, false)
-                // 75 = flag 1 (block update) & flag 2 (send to clients) + flag 8 (force rerenders)
-                val flags = 11 or Block.UPDATE_MOVE_BY_PISTON or Block.UPDATE_SUPPRESS_DROPS
-
-                //updateNeighbourShapes recurses through nearby blocks, recursionLeft is the limit
-                val recursionLeft = 511
-
-                level.setBlocksDirty(pos, block, AIR)
-                level.sendBlockUpdated(pos, block, AIR, flags)
-                level.blockUpdated(pos, AIR.block)
-                // This handles the update for neighboring blocks in worldspace
-                AIR.updateIndirectNeighbourShapes(level, pos, flags, recursionLeft - 1)
-                AIR.updateNeighbourShapes(level, pos, flags, recursionLeft)
-                AIR.updateIndirectNeighbourShapes(level, pos, flags, recursionLeft)
-                //This updates lighting for blocks in worldspace
                 level.chunkSource.lightEngine.checkBlock(pos)
             }
         }
