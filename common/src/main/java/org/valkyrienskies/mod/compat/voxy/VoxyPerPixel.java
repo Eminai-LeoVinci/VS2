@@ -55,6 +55,7 @@ public final class VoxyPerPixel {
     private static boolean glReady = false;
     private static boolean operational = false;  // true once a merge has run; tells the cull to stand down
     private static boolean frameActive = false;  // a merge happened this frame -> afterHull must restore
+    private static boolean loggedVanillaStandDown = false; // one-shot log for the no-shaderpack gate
     // Voxy merge params resolved by beforeHull, consumed by afterHull in the same frame.
     private static VoxyOcclusion.MergeParams frameParams;
 
@@ -141,6 +142,19 @@ public final class VoxyPerPixel {
     public static void beforeHull(final LevelRenderer lr) {
         frameActive = false;
         if (disabled) {
+            return;
+        }
+        // VANILLA STAND-DOWN: without a shaderpack, Voxy's NormalRenderPipeline blits LOD colour AND
+        // depth into the main framebuffer itself (transformBlitDepth during the cutout pass), so the
+        // hull already depth-tests against LOD natively -- this merge is redundant, and running it
+        // double-writes remapped depth over Voxy's own values, punching the hull out behind the LOD
+        // plane (superflat "hovering plane hides the ship" bug). The merge exists solely for Iris,
+        // where Voxy withholds LOD depth from the gbuffer.
+        if (!org.valkyrienskies.mod.common.render.ShipTerrainMeshCache.shadersActive()) {
+            if (!loggedVanillaStandDown) {
+                loggedVanillaStandDown = true;
+                LOGGER.info("[vs perpixel] no shaderpack active -> standing down (Voxy composites LOD depth natively in vanilla)");
+            }
             return;
         }
         try {

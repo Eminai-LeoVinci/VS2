@@ -95,6 +95,7 @@ public final class VoxyOcclusion {
     // Voxy is absent or its internals can't be reached, after which this is a no-op.
     private static boolean failed = false;
     private static boolean resolved = false;
+    private static boolean loggedVanillaStandDown = false; // one-shot log for the no-shaderpack gate
 
     private static Method mGetRenderSystem; // LevelRenderer.voxy$getRenderSystem()
     private static Method mGetViewport;     // VoxyRenderSystem.getViewport()
@@ -133,6 +134,20 @@ public final class VoxyOcclusion {
         }
         if (VoxyPerPixel.isReplacingCull()) {
             return false; // per-pixel occlusion is live -> draw the hull and let it depth-test vs LOD
+        }
+        // VANILLA STAND-DOWN: without a shaderpack this cull must not run. Voxy's vanilla pipeline
+        // COPIES the real MC terrain depth into its own LOD depth buffer (initDepthStencil), so the
+        // samples read here see nearby REAL terrain (e.g. the superflat floor between camera and ship)
+        // as "LOD in front" -> whole-ship false positives whenever the camera is near the ground
+        // (worse at higher render distance). Vanilla also needs no cull at all: Voxy blits LOD depth
+        // into the main framebuffer there, so the hull depth-tests against LOD natively per-pixel.
+        // Under Iris this cull only ever runs as the fallback when VoxyPerPixel disabled itself.
+        if (!org.valkyrienskies.mod.common.render.ShipTerrainMeshCache.shadersActive()) {
+            if (!loggedVanillaStandDown) {
+                loggedVanillaStandDown = true;
+                LOGGER.info("[vs voxy-occlusion] no shaderpack active -> cull standing down (vanilla depth-tests LOD natively)");
+            }
+            return false;
         }
         try {
             if (mGetRenderSystem == null) {

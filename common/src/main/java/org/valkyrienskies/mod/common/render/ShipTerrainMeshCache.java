@@ -303,8 +303,12 @@ public final class ShipTerrainMeshCache {
      * True when a shaderpack is active (Iris). Resolved reflectively against the stable Iris v0 API so
      * there is no compile/runtime dependency on Iris; if Iris is absent or anything fails we report
      * "no shaders" and keep the GPU path available.
+     *
+     * <p>Public because the Voxy compat layer ({@code VoxyPerPixel} / {@code VoxyOcclusion}) gates on
+     * it too: both mechanisms exist solely for the Iris case (Voxy withholds LOD depth from the gbuffer
+     * under a shaderpack) and must stand down in vanilla, where Voxy composites LOD depth itself.
      */
-    private static boolean shadersActive() {
+    public static boolean shadersActive() {
         if (!irisResolved) {
             irisResolved = true;
             try {
