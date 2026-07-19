@@ -83,10 +83,16 @@ public abstract class MixinSodiumWorldRenderer {
 
         renderBlockEntities(matrices, bufferBuilders, blockBreakingProgressions, tickDelta, immediate, x, y, z, blockEntityRenderer, player, isGlowing);
 
-        for (final SortedRenderLists renderLists : ((RenderSectionManagerDuck) this.renderSectionManager).vs_getShipRenderLists().values()) {
+        ((RenderSectionManagerDuck) this.renderSectionManager).vs_getShipRenderLists().forEach((ship, renderLists) -> {
+            // VS-VOXY-OCCLUSION: skip block entities of a ship fully hidden behind Voxy LOD terrain
+            // (same cached verdict the terrain draw uses; Iris-only, self-disables without Voxy).
+            if (org.valkyrienskies.mod.compat.voxy.VoxyOcclusion.isShipOccluded(
+                    net.minecraft.client.Minecraft.getInstance().levelRenderer, ship)) {
+                return;
+            }
             this.currentRenderLists = renderLists;
             renderBlockEntities(matrices, bufferBuilders, blockBreakingProgressions, tickDelta, immediate, x, y, z, blockEntityRenderer, player, isGlowing);
-        }
+        });
 
         this.currentRenderLists = null;
     }
