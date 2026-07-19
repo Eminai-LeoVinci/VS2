@@ -123,18 +123,23 @@ object EntityDragger {
                     val shipLocalPos = carriedShip.worldToShip.transformPosition(
                         worldPos.x, worldPos.y, worldPos.z, Vector3d()
                     )
-                    // Influence border = the ship AABB inflated outward per-FACE by the configured ship-space blocks
-                    // on each of the six faces. Ship-space axis -> face: -X = Left, +X = Right; -Y = Bottom, +Y = Top;
-                    // -Z = Back, +Z = Front. 0 on a face = the raw ship AABB on that face (boundary-inclusive).
-                    val extLeft = VSClientConfig.CLIENT.influenceExtendLeft
-                    val extRight = VSClientConfig.CLIENT.influenceExtendRight
+                    // Influence border = the ship AABB inflated outward per-FACE by the configured blocks on each
+                    // of the six faces. The four horizontal faces are HELM-oriented: Front/Back/Left/Right are
+                    // rotated onto this ship's actual ship-space axes by its learned forward direction (see
+                    // ShipInfluenceOrientation), so "Front" always grows the bow whichever way the ship was
+                    // assembled. Top/Bottom stay +-Y. 0 on a face = the raw ship AABB there (boundary-inclusive).
+                    val h = ShipInfluenceOrientation.horizontalExtents(
+                        ShipInfluenceOrientation.forwardFor(carriedShip.id),
+                        VSClientConfig.CLIENT.influenceExtendFront,
+                        VSClientConfig.CLIENT.influenceExtendBack,
+                        VSClientConfig.CLIENT.influenceExtendLeft,
+                        VSClientConfig.CLIENT.influenceExtendRight
+                    )
                     val extBottom = VSClientConfig.CLIENT.influenceExtendBottom
                     val extTop = VSClientConfig.CLIENT.influenceExtendTop
-                    val extBack = VSClientConfig.CLIENT.influenceExtendBack
-                    val extFront = VSClientConfig.CLIENT.influenceExtendFront
-                    shipLocalPos.x >= shipAABB.minX() - extLeft && shipLocalPos.x <= shipAABB.maxX() + extRight &&
+                    shipLocalPos.x >= shipAABB.minX() - h[0] && shipLocalPos.x <= shipAABB.maxX() + h[1] &&
                         shipLocalPos.y >= shipAABB.minY() - extBottom && shipLocalPos.y <= shipAABB.maxY() + extTop &&
-                        shipLocalPos.z >= shipAABB.minZ() - extBack && shipLocalPos.z <= shipAABB.maxZ() + extFront
+                        shipLocalPos.z >= shipAABB.minZ() - h[2] && shipLocalPos.z <= shipAABB.maxZ() + h[3]
                 } else {
                     false
                 }

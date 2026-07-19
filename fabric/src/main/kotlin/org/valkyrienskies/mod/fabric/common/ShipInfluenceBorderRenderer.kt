@@ -11,6 +11,7 @@ import org.valkyrienskies.mod.client.ShipDebugRender
 import org.valkyrienskies.mod.common.VSClientGameUtils
 import org.valkyrienskies.mod.common.config.VSClientConfig
 import org.valkyrienskies.mod.common.shipObjectWorld
+import org.valkyrienskies.mod.common.util.ShipInfluenceOrientation
 
 /**
  * Draws each loaded ship's "influence border" as a thin blue oriented wireframe box when
@@ -56,8 +57,9 @@ object ShipInfluenceBorderRenderer {
         // Camera position the world renderer is rendering relative to (matrixStack() is camera-relative).
         val cam = mc.gameRenderer.mainCamera.position
 
-        // Per-FACE outward inflation, read LIVE each frame so config edits show immediately. Same face mapping as
-        // EntityDragger's carry test: -X=Left/+X=Right, -Y=Bottom/+Y=Top, -Z=Back/+Z=Front.
+        // Per-FACE outward inflation, read LIVE each frame so config edits show immediately. The four horizontal
+        // faces are HELM-oriented per ship (Front/Back/Left/Right rotated onto the ship's real axes by its learned
+        // forward), identical to EntityDragger's carry test; Top/Bottom stay -Y/+Y.
         val extLeft = VSClientConfig.CLIENT.influenceExtendLeft
         val extRight = VSClientConfig.CLIENT.influenceExtendRight
         val extBottom = VSClientConfig.CLIENT.influenceExtendBottom
@@ -70,12 +72,15 @@ object ShipInfluenceBorderRenderer {
 
             // Inflated ship-space influence box (matches EntityDragger per-face; can be ASYMMETRIC, so the box center
             // below is the midpoint of these inflated bounds, not the ship-AABB center).
-            val minX = shipAABB.minX() - extLeft
-            val maxX = shipAABB.maxX() + extRight
+            val h = ShipInfluenceOrientation.horizontalExtents(
+                ShipInfluenceOrientation.forwardFor(ship.id), extFront, extBack, extLeft, extRight
+            )
+            val minX = shipAABB.minX() - h[0]
+            val maxX = shipAABB.maxX() + h[1]
             val minY = shipAABB.minY() - extBottom
             val maxY = shipAABB.maxY() + extTop
-            val minZ = shipAABB.minZ() - extBack
-            val maxZ = shipAABB.maxZ() + extFront
+            val minZ = shipAABB.minZ() - h[2]
+            val maxZ = shipAABB.maxZ() + h[3]
 
             // Offset the box by -center so the wireframe is built near the origin (avoids float error far from
             // ship-space 0), then put the center back via the render transform below.
