@@ -13,12 +13,11 @@ import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.state.BlockState;
+import java.util.List;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
-import org.joml.primitives.AABBd;
-import org.joml.primitives.AABBdc;
 import org.slf4j.Logger;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -30,7 +29,6 @@ import org.spongepowered.asm.mixin.injection.ModifyVariable;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import org.valkyrienskies.core.api.ships.Ship;
-import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.EntityDraggingInformation;
 import org.valkyrienskies.mod.common.util.EntityShipCollisionUtils;
 import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider;
@@ -253,12 +251,10 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
     // region Block standing on friction and sprinting particles mixins
     @Unique
     private BlockPos getPosStandingOnFromShips(final Vector3dc blockPosInGlobal) {
-        final double radius = 0.5;
-        final AABBdc testAABB = new AABBd(
-            blockPosInGlobal.x() - radius, blockPosInGlobal.y() - radius, blockPosInGlobal.z() - radius,
-            blockPosInGlobal.x() + radius, blockPosInGlobal.y() + radius, blockPosInGlobal.z() + radius
-        );
-        final Iterable<Ship> intersectingShips = VSGameUtilsKt.getShipsIntersecting(level, testAABB);
+        // Shared per-tick candidate list (one spatial query per entity per tick instead of one per
+        // probe); the block checks below still validate each candidate exactly as before.
+        final List<Ship> intersectingShips =
+            EntityShipCollisionUtils.shipsNearEntityFeet(Entity.class.cast(this));
         for (final Ship ship : intersectingShips) {
             final Vector3dc blockPosInLocal =
                 ship.getTransform().getWorldToShip().transformPosition(blockPosInGlobal, new Vector3d());
@@ -287,6 +283,10 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
 
     @Inject(method = "getBlockPosBelowThatAffectsMyMovement", at = @At("HEAD"), cancellable = true)
     private void preGetBlockPosBelowThatAffectsMyMovement(final CallbackInfoReturnable<BlockPos> cir) {
+        // No candidate ships near the feet (memoized, usually free) -> skip the probe allocations.
+        if (EntityShipCollisionUtils.shipsNearEntityFeet(Entity.class.cast(this)).isEmpty()) {
+            return;
+        }
         final Vector3dc blockPosInGlobal = new Vector3d(
             position.x,
             getBoundingBox().minY - 0.5,
@@ -304,6 +304,9 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
      */
     @Inject(method = "getOnPos()Lnet/minecraft/core/BlockPos;", at = @At("HEAD"), cancellable = true)
     private void preGetOnPos(final CallbackInfoReturnable<BlockPos> cir) {
+        if (EntityShipCollisionUtils.shipsNearEntityFeet(Entity.class.cast(this)).isEmpty()) {
+            return;
+        }
         final Vector3dc blockPosInGlobal = new Vector3d(
             position.x,
             position.y - 0.2,
@@ -317,6 +320,9 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
 
     @Inject(method = "spawnSprintParticle", at = @At("HEAD"), cancellable = true)
     private void preSpawnSprintParticle(final CallbackInfo ci) {
+        if (EntityShipCollisionUtils.shipsNearEntityFeet(Entity.class.cast(this)).isEmpty()) {
+            return;
+        }
         final Vector3dc blockPosInGlobal = new Vector3d(
             position.x,
             position.y - 0.2,

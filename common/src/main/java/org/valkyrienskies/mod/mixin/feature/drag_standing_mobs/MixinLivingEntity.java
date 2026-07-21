@@ -6,8 +6,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
-import org.joml.primitives.AABBd;
-import org.joml.primitives.AABBdc;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -16,6 +14,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.valkyrienskies.core.api.ships.Ship;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.EntityDraggingInformation;
+import org.valkyrienskies.mod.common.util.EntityShipCollisionUtils;
 import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider;
 
 /**
@@ -79,16 +78,13 @@ public abstract class MixinLivingEntity {
      */
     @Unique
     private Ship vs$findShipStandingOn(final LivingEntity self, final Level level) {
-        final double radius = 0.5;
         final double gx = self.getX();
         final double gy = self.getBoundingBox().minY - 0.5;
         final double gz = self.getZ();
         final Vector3dc global = new Vector3d(gx, gy, gz);
-        final AABBdc testAABB = new AABBd(
-            gx - radius, gy - radius, gz - radius,
-            gx + radius, gy + radius, gz + radius
-        );
-        for (final Ship ship : VSGameUtilsKt.getShipsIntersecting(level, testAABB)) {
+        // Shared per-tick candidate list (one spatial query per entity per tick instead of one per
+        // consumer); the block-under-feet checks below still validate each candidate exactly as before.
+        for (final Ship ship : EntityShipCollisionUtils.shipsNearEntityFeet(self)) {
             final Vector3dc local =
                 ship.getTransform().getWorldToShip().transformPosition(global, new Vector3d());
             final BlockPos blockPos = BlockPos.containing(

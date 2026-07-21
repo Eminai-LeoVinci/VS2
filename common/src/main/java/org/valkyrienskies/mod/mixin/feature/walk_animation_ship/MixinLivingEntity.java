@@ -3,7 +3,6 @@ package org.valkyrienskies.mod.mixin.feature.walk_animation_ship;
 import net.minecraft.world.entity.LivingEntity;
 import org.joml.Vector3d;
 import org.joml.Vector3dc;
-import org.joml.primitives.AABBd;
 import org.joml.primitives.AABBdc;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
@@ -13,6 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.valkyrienskies.core.api.ships.Ship;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.EntityDraggingInformation;
+import org.valkyrienskies.mod.common.util.EntityShipCollisionUtils;
 import org.valkyrienskies.mod.common.util.IEntityDraggingInformationProvider;
 
 @Mixin(LivingEntity.class)
@@ -100,14 +100,31 @@ public abstract class MixinLivingEntity {
         // Fallback: position-intersect ship lookup. Works for REMOTE entities on the observing
         // client, where lastShipStoodOn is null but the ship transform IS sync'd, so its AABB
         // moves with it and the entity's post-interp position is inside it.
+        //
+        // Candidates come from the SHARED per-tick foot query (one spatial query per entity per
+        // tick, memoized -- see EntityShipCollisionUtils.shipsNearEntityFeet); since this site has
+        // no block-under-feet validation of its own, each candidate's world AABB is re-tested
+        // against the ORIGINAL tight foot box, so the verdict is identical to the old direct query
+        // (the shared candidate box is a padded superset).
         if (ship == null) {
-            AABBdc footAABB = new AABBd(
-                self.getX() - 0.4, self.getY() - 1.0, self.getZ() - 0.4,
-                self.getX() + 0.4, self.getY() + 0.1, self.getZ() + 0.4);
-            for (Ship s : VSGameUtilsKt.getShipsIntersecting(self.level(), footAABB)) {
-                ship = s;
-                shipId = s.getId();
-                break;
+            final double minX = self.getX() - 0.4;
+            final double minY = self.getY() - 1.0;
+            final double minZ = self.getZ() - 0.4;
+            final double maxX = self.getX() + 0.4;
+            final double maxY = self.getY() + 0.1;
+            final double maxZ = self.getZ() + 0.4;
+            for (Ship s : EntityShipCollisionUtils.shipsNearEntityFeet(self)) {
+                final AABBdc shipAabb = s.getWorldAABB();
+                if (shipAabb == null) {
+                    continue; // no AABB yet -> the old direct query couldn't have returned it either
+                }
+                if (shipAabb.maxX() >= minX && shipAabb.minX() <= maxX
+                    && shipAabb.maxY() >= minY && shipAabb.minY() <= maxY
+                    && shipAabb.maxZ() >= minZ && shipAabb.minZ() <= maxZ) {
+                    ship = s;
+                    shipId = s.getId();
+                    break;
+                }
             }
         }
 

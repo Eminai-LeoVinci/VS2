@@ -23,6 +23,7 @@ import org.valkyrienskies.core.api.ships.properties.ShipId
 import org.valkyrienskies.mod.common.allShips
 import org.valkyrienskies.mod.common.dimensionId
 import org.valkyrienskies.mod.common.getLoadedShipManagingPos
+import org.valkyrienskies.mod.common.getShipsIntersecting
 import org.valkyrienskies.mod.common.shipObjectWorld
 import org.valkyrienskies.mod.common.vsCore
 import org.valkyrienskies.mod.mixinducks.feature.tickets.PlayerKnownShipsDuck
@@ -59,6 +60,54 @@ object EntityShipCollisionUtils {
             return false
         }
         return true
+    }
+
+    /**
+     * Shared per-entity-per-tick "which ships are near this entity's feet" CANDIDATE query. Walk-anim,
+     * the drag-standing stamp, and the standing-on probes (getBlockPosBelowThatAffectsMyMovement /
+     * getOnPos / sprint particles) previously each issued their own spatial query -- up to 4 per living
+     * entity per tick; this runs ONE and memoizes it on the entity's dragging info for the tick.
+     *
+     * The probe box is a padded UNION of every caller's box (XZ +-1.0; Y from y-1.5 to y+0.5, containing
+     * the walk-anim +-0.4/-1.0..+0.1 box and both 0.5-radius standing probes incl. their one-block-below
+     * fence checks, with slack for within-tick movement between move() and the later probes). Callers
+     * MUST still run their own per-ship validation (block-under-feet check, or an exact ship-AABB
+     * intersect) -- this list is a superset of every individual query's result, never a substitute.
+     *
+     * Returns an empty list when the world has no ships (the common case) without querying.
+     */
+    @JvmStatic
+    fun shipsNearEntityFeet(entity: Entity): List<Ship> {
+        val level = entity.level()
+        val info = (entity as? IEntityDraggingInformationProvider)?.draggingInformation
+        if (info != null && info.footShipsQueryTick == level.gameTime && info.footShipsQueryLevel === level) {
+            return info.footShipsQueryResult
+        }
+        val result: List<Ship>
+        if (level.allShips.none()) {
+            result = emptyList()
+        } else {
+            val x = entity.x
+            val y = entity.y
+            val z = entity.z
+            val union = AABBd(x - 1.0, y - 1.5, z - 1.0, x + 1.0, y + 0.5, z + 1.0)
+            val iter = level.getShipsIntersecting(union).iterator()
+            if (!iter.hasNext()) {
+                result = emptyList()
+            } else {
+                val list = ArrayList<Ship>(2)
+                while (iter.hasNext()) {
+                    list.add(iter.next())
+                }
+                result = list
+            }
+        }
+        if (info != null) {
+            info.footShipsQueryTick = level.gameTime
+            info.footShipsQueryLevel = level
+            info.footShipsQueryResult = result
+        }
+        return result
     }
 
     /**
