@@ -3,6 +3,7 @@ package org.valkyrienskies.mod.common
 import com.mojang.blaze3d.vertex.PoseStack
 import net.minecraft.client.Minecraft
 import net.minecraft.core.BlockPos
+import org.joml.Matrix3f
 import org.joml.Matrix4d
 import org.joml.Matrix4f
 import org.valkyrienskies.core.api.ships.ClientShip
@@ -63,6 +64,33 @@ object VSClientGameUtils {
 
         // Multiply the last transform of [poseStack] by [shipToWorldMatrix]
         poseStack.multiply(renderMatrix, renderTransform.shipToWorldRotation)
+    }
+
+    /**
+     * Allocation-free variant of [transformRenderWithShip] for per-frame hot paths (the ship terrain
+     * mesh cache calls it once per visible section per frame): same math, but all intermediates are
+     * caller-owned scratch, render-thread confined. [scratchModel] and [scratchPose] must be distinct.
+     */
+    @JvmStatic
+    fun transformRenderWithShip(
+        renderTransform: ShipTransform,
+        poseStack: PoseStack,
+        offsetX: Double,
+        offsetY: Double,
+        offsetZ: Double,
+        camX: Double,
+        camY: Double,
+        camZ: Double,
+        scratchModel: Matrix4d,
+        scratchPose: Matrix4d,
+        scratchNormal: Matrix3f
+    ) {
+        // Same construction as the allocating overload: translate(-cam) * shipToWorld * translate(offset).
+        scratchModel.translation(-camX, -camY, -camZ)
+        scratchModel.mul(renderTransform.shipToWorld)
+        scratchModel.translate(offsetX, offsetY, offsetZ)
+
+        poseStack.multiply(scratchModel, renderTransform.shipToWorldRotation, scratchPose, scratchNormal)
     }
 
     @JvmStatic

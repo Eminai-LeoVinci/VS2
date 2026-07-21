@@ -86,6 +86,14 @@ object VSGameConfig {
         var renderShipShadows = true
 
         @ConfigEntry(
+            description = "Max distance (blocks, camera to ship center) at which ships still cast Iris shadows. " +
+                "Ships beyond it skip the shadow pass entirely (their sections neither bake for nor draw into " +
+                "the shadow map), trading distant ship shadows for FPS with many ships loaded. " +
+                "0 = unlimited (every ship the sun sees casts). Only applies while ship shadows are on."
+        )
+        var shipShadowDistance = 0.0
+
+        @ConfigEntry(
             description = "Write each ship block's shaderpack id into mc_Entity so Iris shaders light/bloom ship " +
                 "blocks (glowstone, lanterns, lava, ...) and apply per-block material logic, exactly as on land. " +
                 "Costs some FPS under heavy lighting (the shaderpack's emission/voxel work, not the mod's). " +

@@ -55,6 +55,8 @@ import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
 import net.minecraft.world.level.material.FluidState;
 import org.joml.FrustumIntersection;
+import org.joml.Matrix3f;
+import org.joml.Matrix4d;
 import org.joml.Matrix4dc;
 import org.joml.Matrix4f;
 import org.joml.Vector3d;
@@ -165,6 +167,10 @@ public final class ShipTerrainMeshCache {
     private final Vector3d cullMin = new Vector3d();
     private final Vector3d cullMax = new Vector3d();
     private final PoseStack scratchPose = new PoseStack();
+    // Scratch for the allocation-free transformRenderWithShip overload (per visible section per frame).
+    private final Matrix4d scratchModel = new Matrix4d();
+    private final Matrix4d scratchPoseMat = new Matrix4d();
+    private final Matrix3f scratchNormal = new Matrix3f();
 
     // Per-frame queue of GPU draws, collected during the section walk and flushed in one render pass
     // afterwards (so buffer uploads during lazy baking never happen inside an open pass).
@@ -258,9 +264,12 @@ public final class ShipTerrainMeshCache {
     /**
      * A queued GPU draw: one section's persistent meshes plus its RAW ship pose (camera-relative). The
      * camera (main pass) or shadow (shadow pass) model-view is composed onto it at flush time, so the same
-     * queue can be drawn into both passes.
+     * queue can be drawn into both passes. Each pass draws only the items visible to IT
+     * ({@code cameraVisible} / {@code shadowVisible}) -- previously both passes drew the whole queue, so
+     * the main pass paid for every behind-camera (shadow-only) section.
      */
-    private record GpuDrawItem(Matrix4f shipPose, List<GpuMesh> meshes) {
+    private record GpuDrawItem(Matrix4f shipPose, List<GpuMesh> meshes,
+        boolean cameraVisible, boolean shadowVisible) {
     }
 
     private static final class CachedSection {
@@ -269,6 +278,12 @@ public final class ShipTerrainMeshCache {
         // Solid/cutout/tripwire geometry: persistent GPU buffers, redrawn with a transform each frame.
         final List<GpuMesh> gpuMeshes = new ArrayList<>(2);
         long lastUsedFrame;
+        // Cached shadow-frustum verdict for camera-culled sections, recomputed every few frames
+        // (staggered by section key). The shadow frustum is a large, slow-moving box, so brief
+        // staleness is invisible -- and the cache removes a per-frame AABB allocation + Iris
+        // isVisible call for every off-camera section while ship shadows are on.
+        long shadowCullFrame = -1000L;
+        boolean shadowCullResult;
 
         boolean isEmpty() {
             return built.isEmpty() && gpuMeshes.isEmpty();
@@ -413,13 +428,33 @@ public final class ShipTerrainMeshCache {
             final Frustum shadowFrustum =
                 (ShipTerrainIrisPipeline.shadowReady() && VSGameConfig.CLIENT.getRenderShipShadows())
                     ? ShipTerrainIrisPipeline.shadowFrustum() : null;
+            final double shadowDistCap = VSGameConfig.CLIENT.getShipShadowDistance();
 
             for (final ClientShip ship : VSGameUtilsKt.getShipObjectWorld(level).getLoadedShips()) {
                 // Skip the whole ship (and all its per-chunk/-section work) when neither the camera nor (for
-                // shadows) the sun can see it.
-                final var shipAabb = VectorConversionsMCKt.toMinecraft(ship.getRenderAABB());
-                final boolean shipVisible = (frustum == null || frustum.isVisible(shipAabb))
-                    || (shadowFrustum != null && shadowFrustum.isVisible(shipAabb));
+                // shadows) the sun can see it. The camera test runs allocation-free on the render AABB's
+                // doubles; the MC-AABB shadow test (Iris only overrides isVisible(AABB)) is built lazily,
+                // only for camera-culled ships while shadows are on.
+                final var renderAabb = ship.getRenderAABB();
+                final boolean shipCamVisible = isWorldBoxVisible(frustum,
+                    renderAabb.minX(), renderAabb.minY(), renderAabb.minZ(),
+                    renderAabb.maxX(), renderAabb.maxY(), renderAabb.maxZ());
+                // Per-ship shadow frustum: null when shadows are off, or the ship's center is beyond the
+                // configured shadow-distance cap (its sections then neither bake for nor draw into the
+                // shadow map). 0 = uncapped.
+                Frustum shipShadow = shadowFrustum;
+                if (shipShadow != null && shadowDistCap > 0.0) {
+                    final double dx = (renderAabb.minX() + renderAabb.maxX()) * 0.5 - camX;
+                    final double dy = (renderAabb.minY() + renderAabb.maxY()) * 0.5 - camY;
+                    final double dz = (renderAabb.minZ() + renderAabb.maxZ()) * 0.5 - camZ;
+                    if (dx * dx + dy * dy + dz * dz > shadowDistCap * shadowDistCap) {
+                        shipShadow = null;
+                    }
+                }
+                final Frustum shipShadowFrustum = shipShadow;
+                final boolean shipVisible = shipCamVisible
+                    || (shipShadowFrustum != null
+                        && shipShadowFrustum.isVisible(VectorConversionsMCKt.toMinecraft(renderAabb)));
                 if (!shipVisible) {
                     continue;
                 }
@@ -441,18 +476,37 @@ public final class ShipTerrainMeshCache {
                         final int sectionY = minSectionY + sectionIndex;
                         final long key = SectionPos.asLong(chunkX, sectionY, chunkZ);
 
-                        // Visible to the camera OR (for shadows) to the sun -- so casters behind the camera
-                        // still bake + queue, and thus draw into the shadow map. The sun test uses the public
-                        // isVisible(AABB) (not the allocation-free cubeInFrustum invoker) so Iris's shadow
-                        // frustum override actually runs; the || short-circuits, so it only fires for
-                        // off-camera sections when shadows are on.
-                        final boolean visible =
-                            isShipSectionVisible(frustum, shipToWorld, chunkX, sectionY, chunkZ)
-                                || (shadowFrustum != null
-                                    && isShipSectionVisibleShadow(shadowFrustum, shipToWorld,
-                                        chunkX, sectionY, chunkZ));
-
                         CachedSection cached = sections.get(key);
+
+                        // Camera and shadow visibility are tracked SEPARATELY so each render pass draws
+                        // only its own sections: the main pass skips shadow-only (behind-camera) casters
+                        // -- previously it drew every queued section -- while the shadow pass still gets
+                        // every caster the sun can see. Camera-visible implies shadow-visible (matches the
+                        // old combined queue, so no caster the main pass draws ever misses the shadow map).
+                        // The sun test uses the public isVisible(AABB) (not the allocation-free
+                        // cubeInFrustum invoker) so Iris's shadow frustum override actually runs; it only
+                        // fires for off-camera sections while shadows are on, and its verdict is cached
+                        // for a few frames per section (see CachedSection.shadowCullFrame).
+                        final boolean camVisible =
+                            isShipSectionVisible(frustum, shipToWorld, chunkX, sectionY, chunkZ);
+                        final boolean shadowVisible;
+                        if (shipShadowFrustum == null) {
+                            shadowVisible = false;
+                        } else if (camVisible) {
+                            shadowVisible = true;
+                        } else if (cached != null) {
+                            if (frame - cached.shadowCullFrame >= 3 + (key & 3)) {
+                                cached.shadowCullFrame = frame;
+                                cached.shadowCullResult = isShipSectionVisibleShadow(
+                                    shipShadowFrustum, shipToWorld, chunkX, sectionY, chunkZ);
+                            }
+                            shadowVisible = cached.shadowCullResult;
+                        } else {
+                            shadowVisible = isShipSectionVisibleShadow(
+                                shipShadowFrustum, shipToWorld, chunkX, sectionY, chunkZ);
+                        }
+                        final boolean visible = camVisible || shadowVisible;
+
                         if (cached == null) {
                             // Defer the (expensive) bake until the section is first actually visible,
                             // and cap bakes per frame so a ship appearing all at once doesn't hitch.
@@ -460,6 +514,9 @@ public final class ShipTerrainMeshCache {
                                 continue;
                             }
                             cached = bake(level, chunkX, sectionY, chunkZ, dispatcher, random);
+                            // Seed the shadow-cull cache with the verdict just computed above.
+                            cached.shadowCullFrame = frame;
+                            cached.shadowCullResult = shadowVisible;
                             sections.put(key, cached);
                             lastBaked++;
                         }
@@ -472,29 +529,40 @@ public final class ShipTerrainMeshCache {
                         if (cached.isEmpty()) {
                             continue;
                         }
-
-                        // One ship pose per section; section-local [0,16] vertices map to render space
-                        // exactly as the per-block immediate path does (offset by the section origin).
-                        // Reuse a single scratch PoseStack to avoid a per-section allocation each frame.
-                        scratchPose.setIdentity();
-                        VSClientGameUtils.transformRenderWithShip(renderTransform, scratchPose,
-                            chunkX * 16.0, sectionY * 16.0, chunkZ * 16.0, camX, camY, camZ);
-                        final PoseStack.Pose pose = scratchPose.last();
-
                         // Ship fully behind LOD terrain: sections stay baked + kept-alive (above), but
                         // emit nothing this frame. (Cheaper than drawing, and the only thing that
                         // actually hides the hull under shaders -- the immediate re-emit path.)
                         if (shipOccluded) {
                             continue;
                         }
-                        // Translucent: immediate re-emit (keeps vanilla's per-frame back-to-front sort).
-                        for (final Built b : cached.built) {
-                            emit(bufferSource.getBuffer(b.type), pose, b);
+                        // Anything to do this frame? Translucents re-emit only when the CAMERA sees the
+                        // section -- they only ever land in the main pass's bufferSource (the shadow pass
+                        // never consumes them), so shadow-only sections skip the per-vertex CPU cost.
+                        final boolean emitTranslucent = camVisible && !cached.built.isEmpty();
+                        final boolean queueGpu = !cached.gpuMeshes.isEmpty();
+                        if (!emitTranslucent && !queueGpu) {
+                            continue;
+                        }
+
+                        // One ship pose per section; section-local [0,16] vertices map to render space
+                        // exactly as the per-block immediate path does (offset by the section origin).
+                        // Scratch pose stack + matrices (render-thread only): zero per-section allocation.
+                        scratchPose.setIdentity();
+                        VSClientGameUtils.transformRenderWithShip(renderTransform, scratchPose,
+                            chunkX * 16.0, sectionY * 16.0, chunkZ * 16.0, camX, camY, camZ,
+                            scratchModel, scratchPoseMat, scratchNormal);
+                        final PoseStack.Pose pose = scratchPose.last();
+
+                        if (emitTranslucent) {
+                            for (final Built b : cached.built) {
+                                emit(bufferSource.getBuffer(b.type), pose, b);
+                            }
                         }
                         // Solid/cutout: queue a GPU draw with this section's RAW ship pose. Copy it (scratchPose
                         // is mutated next section); the camera/shadow model-view is composed per pass at flush.
-                        if (!cached.gpuMeshes.isEmpty()) {
-                            gpuDrawQueue.add(new GpuDrawItem(new Matrix4f(pose.pose()), cached.gpuMeshes));
+                        if (queueGpu) {
+                            gpuDrawQueue.add(new GpuDrawItem(new Matrix4f(pose.pose()), cached.gpuMeshes,
+                                camVisible, shadowVisible));
                         }
                     }
                 });
@@ -585,6 +653,20 @@ public final class ShipTerrainMeshCache {
             return; // shadow pass but the shadow model-view wasn't available this frame
         }
 
+        // Each pass draws ONLY its own items: the main pass skips shadow-only (behind-camera) sections
+        // -- previously both passes drew the whole queue -- and the shadow pass skips camera-only ones.
+        final int total = gpuDrawQueue.size();
+        int n = 0;
+        for (int i = 0; i < total; i++) {
+            final GpuDrawItem item = gpuDrawQueue.get(i);
+            if (shadow ? item.shadowVisible() : item.cameraVisible()) {
+                n++;
+            }
+        }
+        if (n == 0) {
+            return;
+        }
+
         // PHASE 1 -- everything that MAPS a GPU buffer (the transforms + sizing the sequential index
         // buffer) MUST happen before a render pass is opened; mapping inside an open pass throws
         // "Close the existing render pass before performing additional commands".
@@ -594,19 +676,25 @@ public final class ShipTerrainMeshCache {
         // separate writeTransform calls do NOT work here -- when the UBO hits its capacity mid-batch it
         // reallocates, so any slice handed out before that point references a freed buffer, which
         // transformed whole sections off-screen and made the ship vanish.
-        final int n = gpuDrawQueue.size();
+        final GpuDrawItem[] passItems = new GpuDrawItem[n];
         final DynamicUniforms.Transform[] transforms = new DynamicUniforms.Transform[n];
         int maxIndexCount = 0;
-        for (int i = 0; i < n; i++) {
+        int j = 0;
+        for (int i = 0; i < total; i++) {
             final GpuDrawItem item = gpuDrawQueue.get(i);
+            if (!(shadow ? item.shadowVisible() : item.cameraVisible())) {
+                continue;
+            }
+            passItems[j] = item;
             final Matrix4f modelView = new Matrix4f(baseModelView).mul(item.shipPose());
-            transforms[i] =
+            transforms[j] =
                 new DynamicUniforms.Transform(modelView, WHITE, NO_MODEL_OFFSET, IDENTITY_TEX);
             for (final GpuMesh gm : item.meshes()) {
                 if (gm.indexCount > maxIndexCount) {
                     maxIndexCount = gm.indexCount;
                 }
             }
+            j++;
         }
         if (maxIndexCount == 0) {
             return;
@@ -636,7 +724,7 @@ public final class ShipTerrainMeshCache {
             RenderPipeline boundPipeline = null;
             for (int i = 0; i < n; i++) {
                 final GpuBufferSlice transform = slices[i];
-                for (final GpuMesh gm : gpuDrawQueue.get(i).meshes()) {
+                for (final GpuMesh gm : passItems[i].meshes()) {
                     // Iris-format meshes (TERRAIN stride) draw through the Iris-assigned terrain pipeline
                     // so the shaderpack's gbuffer program shades them. Vanilla-format meshes (no shaderpack)
                     // use the render type's own pipeline.
@@ -714,6 +802,22 @@ public final class ShipTerrainMeshCache {
         shipToWorld.transformAab(x0, y0, z0, x0 + 16.0, y0 + 16.0, z0 + 16.0, cullMin, cullMax);
         return shadowFrustum.isVisible(new net.minecraft.world.phys.AABB(
             cullMin.x, cullMin.y, cullMin.z, cullMax.x, cullMax.y, cullMax.z));
+    }
+
+    /**
+     * Frustum-test an already-world-space box (e.g. a ship's render AABB), allocation-free. Null
+     * frustum = visible. Same INSIDE/INTERSECT semantics as vanilla {@code isVisible(AABB)}; only for
+     * the CAMERA frustum -- Iris shadow frustums override {@code isVisible(AABB)} and need that call.
+     */
+    private static boolean isWorldBoxVisible(final Frustum frustum,
+        final double minX, final double minY, final double minZ,
+        final double maxX, final double maxY, final double maxZ) {
+        if (frustum == null) {
+            return true;
+        }
+        final int result = ((FrustumInvoker) frustum).valkyrienskies$cubeInFrustum(
+            minX, minY, minZ, maxX, maxY, maxZ);
+        return result == FrustumIntersection.INSIDE || result == FrustumIntersection.INTERSECT;
     }
 
     /** Frustum-test a shipyard-space box transformed into rendered world space. Null frustum = visible. */

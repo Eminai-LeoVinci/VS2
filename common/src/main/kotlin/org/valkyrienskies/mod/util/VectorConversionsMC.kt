@@ -119,6 +119,25 @@ fun PoseStack.multiply(modelTransform: Matrix4dc, normalTransform: Quaterniondc)
     last.normal().set(newNormal)
 }
 
+/**
+ * Scratch-based variant of [multiply] for per-frame hot paths: same math, but the intermediates are
+ * caller-owned scratch (render-thread confined), so nothing is allocated per call. [scratchPose] must
+ * not alias [modelTransform].
+ */
+fun PoseStack.multiply(
+    modelTransform: Matrix4dc,
+    normalTransform: Quaterniondc,
+    scratchPose: Matrix4d,
+    scratchNormal: Matrix3f
+) = also {
+    val last = last()
+    scratchPose.set(last.pose()).mul(modelTransform)
+    last.pose().set(scratchPose)
+    // Matrix3f.mul mutates last.normal() in place (the non-scratch overload's trailing set() was a
+    // self-set), so only the quaternion->matrix conversion needs scratch.
+    last.normal().mul(scratchNormal.set(normalTransform))
+}
+
 fun PoseStack.multiply(modelTransform: Matrix4dc) = also {
     val last = last()
     val newPose = Matrix4d().set(last.pose()).mul(modelTransform)
