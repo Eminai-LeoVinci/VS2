@@ -445,10 +445,36 @@ public abstract class MixinLevelRenderer {
     // disappear until I update a block around it" bug. The private overload catches every dirty path
     // (public overload, setBlockDirty, neighbours) and fires after the new state is committed, so the
     // re-bake reads fresh blocks. No-op for normal (non-ship) terrain -- the lookup misses cheaply.
+    //
+    // LIGHT-vs-BLOCK discrimination: the public (III) overload is the LIGHT path (light-engine /
+    // section-light-packet dirties call it; block edits go setBlockDirty -> (IIIZ) directly, per the
+    // note above) and it delegates into the (IIIZ) funnel. So while a public (III) call is on the
+    // stack, the nested (IIIZ) dirty is LIGHT-ONLY: the section's blocks are unchanged and its cached
+    // geometry stays valid -- only the baked lighting is stale. Those invalidations no longer EVICT
+    // the mesh (which blinked sections during post-assembly light storms and block-break relights);
+    // they just flag it for a budgeted in-place lighting re-bake (see ShipTerrainMeshCache). If a
+    // modded path ever routes a real block edit through the public overload, the worst case is that
+    // edit's visual applying up to ~20 frames late -- and the LevelChunk setBlockState hook
+    // (MixinLevelChunkClientRender) already invalidates hard on every real ship block change anyway.
+    @Unique
+    private boolean valkyrienskies$inPublicSectionDirty;
+
+    @Inject(method = "setSectionDirty(III)V", at = @At("HEAD"), require = 1)
+    private void valkyrienskies$enterLightDirtyContext(final int x, final int y, final int z,
+        final CallbackInfo ci) {
+        this.valkyrienskies$inPublicSectionDirty = true;
+    }
+
+    @Inject(method = "setSectionDirty(III)V", at = @At("RETURN"), require = 1)
+    private void valkyrienskies$exitLightDirtyContext(final int x, final int y, final int z,
+        final CallbackInfo ci) {
+        this.valkyrienskies$inPublicSectionDirty = false;
+    }
+
     @Inject(method = "setSectionDirty(IIIZ)V", at = @At("HEAD"), require = 1)
     private void valkyrienskies$invalidateShipSectionMesh(final int x, final int y, final int z,
         final boolean reRenderOnMainThread, final CallbackInfo ci) {
-        ShipTerrainMeshCache.INSTANCE.invalidateSection(x, y, z);
+        ShipTerrainMeshCache.INSTANCE.invalidateSection(x, y, z, this.valkyrienskies$inPublicSectionDirty);
     }
 
     @Unique

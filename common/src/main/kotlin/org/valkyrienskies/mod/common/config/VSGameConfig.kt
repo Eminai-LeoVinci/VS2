@@ -94,6 +94,20 @@ object VSGameConfig {
         var shipShadowDistance = 0.0
 
         @ConfigEntry(
+            description = "Max ship terrain sections baked per frame when sections first become visible or after " +
+                "a block edit. Higher = ships appear/update faster but with bigger frame hitches. Default 8."
+        )
+        var shipMaxSectionBakesPerFrame = 8
+
+        @ConfigEntry(
+            description = "Max ship terrain sections re-baked per frame for LIGHT-ONLY changes (torches placed " +
+                "nearby, day/night cycle). Light re-bakes refresh a section's baked lighting in place while the " +
+                "old mesh keeps drawing, so nothing blinks. 0 = ship lighting only refreshes on block edits. " +
+                "Default 2."
+        )
+        var shipLightRebakesPerFrame = 2
+
+        @ConfigEntry(
             description = "Write each ship block's shaderpack id into mc_Entity so Iris shaders light/bloom ship " +
                 "blocks (glowstone, lanterns, lava, ...) and apply per-block material logic, exactly as on land. " +
                 "Costs some FPS under heavy lighting (the shaderpack's emission/voxel work, not the mod's). " +

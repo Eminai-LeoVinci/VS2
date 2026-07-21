@@ -116,9 +116,9 @@ public final class ShipTerrainMeshCache {
     // Off-screen ships are skipped wholesale, so a section can go untouched for a while without the
     // ship being gone; keep cached sections alive long enough to survive normal look-aways.
     private static final long EVICT_AFTER_FRAMES = 3600L;
-    // Cap how many sections may be baked in a single frame so a ship coming into view doesn't bake
-    // its whole hull at once (a visible hitch). Over-budget sections bake on following frames.
-    private static final int MAX_BAKES_PER_FRAME = 8;
+    // Per-section cooldown between LIGHT-ONLY in-place re-bakes, so a light-flickering source can't
+    // re-bake the same section every frame. The stale-lit mesh keeps drawing meanwhile.
+    private static final long LIGHT_REBAKE_COOLDOWN_FRAMES = 20L;
 
     // Auto-recovery for the cache + GPU path: after a render/GPU error we skip the failed path for this
     // many frames (~1.7s at 60fps) and then RETRY, instead of disabling it permanently until relog. Repeated
@@ -207,8 +207,10 @@ public final class ShipTerrainMeshCache {
     private static Object irisApiInstance;
     private static Method irisIsShaderPackInUse;
 
-    // Per-frame bake budget counter (reset each frame); throttles first-time section bakes.
+    // Per-frame bake budget counters (reset each frame): first-time/block-edit bakes and
+    // light-only in-place re-bakes are budgeted separately (see the config entries).
     private int lastBaked;
+    private int lightRebaked;
 
     private ShipTerrainMeshCache() {
     }
@@ -284,6 +286,11 @@ public final class ShipTerrainMeshCache {
         // isVisible call for every off-camera section while ship shadows are on.
         long shadowCullFrame = -1000L;
         boolean shadowCullResult;
+        // Light-only staleness: a relight arrived but the geometry is unchanged. The mesh stays valid
+        // and keeps drawing; renderAll re-bakes it IN PLACE (budgeted per frame + per-section cooldown)
+        // instead of evicting -- eviction on every relight blinked sections during light storms.
+        boolean lightDirty;
+        long lastLightRebakeFrame = -1000L;
 
         boolean isEmpty() {
             return built.isEmpty() && gpuMeshes.isEmpty();
@@ -369,9 +376,15 @@ public final class ShipTerrainMeshCache {
             }
             frame++;
             lastBaked = 0;
+            lightRebaked = 0;
             gpuDrawQueue.clear();
             flushedMain = false;
             flushedShadow = false;
+
+            // Bake budgets (config, clamped): at least 1 first-time bake per frame or ships could
+            // never appear; light re-bakes may be 0 (= relight only on block edits).
+            final int maxBakes = Math.max(1, VSGameConfig.CLIENT.getShipMaxSectionBakesPerFrame());
+            final int maxLightRebakes = Math.max(0, VSGameConfig.CLIENT.getShipLightRebakesPerFrame());
 
             // Tick the GPU-path retry cooldown (a GPU draw error parks the persistent-GPU path here); when it
             // reaches 0 the path re-activates and the flip below re-bakes into GPU buffers.
@@ -510,7 +523,7 @@ public final class ShipTerrainMeshCache {
                         if (cached == null) {
                             // Defer the (expensive) bake until the section is first actually visible,
                             // and cap bakes per frame so a ship appearing all at once doesn't hitch.
-                            if (!visible || lastBaked >= MAX_BAKES_PER_FRAME) {
+                            if (!visible || lastBaked >= maxBakes) {
                                 continue;
                             }
                             cached = bake(level, chunkX, sectionY, chunkZ, dispatcher, random);
@@ -534,6 +547,25 @@ public final class ShipTerrainMeshCache {
                         // actually hides the hull under shaders -- the immediate re-emit path.)
                         if (shipOccluded) {
                             continue;
+                        }
+                        // Light-only staleness: re-bake IN PLACE (budgeted + per-section cooldown) while
+                        // the stale-lit mesh keeps drawing -- no eviction, so nothing blinks. Camera-visible
+                        // only: the shadow map is depth-only, so stale lighting is invisible there. Closing
+                        // the old GPU buffers here is safe: this frame's queue was cleared at renderAll
+                        // start and is rebuilt below with the fresh meshes; last frame's queue was already
+                        // consumed by the shadow pass (which runs before renderAll).
+                        if (cached.lightDirty && camVisible
+                            && lightRebaked < maxLightRebakes
+                            && frame - cached.lastLightRebakeFrame >= LIGHT_REBAKE_COOLDOWN_FRAMES) {
+                            final CachedSection fresh =
+                                bake(level, chunkX, sectionY, chunkZ, dispatcher, random);
+                            fresh.shadowCullFrame = cached.shadowCullFrame;
+                            fresh.shadowCullResult = cached.shadowCullResult;
+                            fresh.lastLightRebakeFrame = frame;
+                            cached.close();
+                            sections.put(key, fresh);
+                            cached = fresh;
+                            lightRebaked++;
                         }
                         // Anything to do this frame? Translucents re-emit only when the CAMERA sees the
                         // section -- they only ever land in the main pass's bufferSource (the shadow pass
@@ -1220,7 +1252,26 @@ public final class ShipTerrainMeshCache {
      * closing any GPU buffers it held. Cheap no-op when nothing is cached (the common, no-ships case).
      */
     public void invalidateSection(final int sectionX, final int sectionY, final int sectionZ) {
+        invalidateSection(sectionX, sectionY, sectionZ, false);
+    }
+
+    /**
+     * As {@link #invalidateSection(int, int, int)}, but a LIGHT-ONLY dirty ({@code lightOnly=true},
+     * classified by MixinLevelRenderer's public-overload context) does NOT evict: the geometry is
+     * unchanged and the mesh keeps drawing; it is only flagged for a budgeted in-place lighting
+     * re-bake in {@code renderAll}. Evicting on every relight re-baked whole sections through the
+     * bake budget and blinked them during post-assembly light storms and block-break relights.
+     */
+    public void invalidateSection(final int sectionX, final int sectionY, final int sectionZ,
+        final boolean lightOnly) {
         if (sections.isEmpty()) {
+            return;
+        }
+        if (lightOnly) {
+            final CachedSection cached = sections.get(SectionPos.asLong(sectionX, sectionY, sectionZ));
+            if (cached != null) {
+                cached.lightDirty = true;
+            }
             return;
         }
         final CachedSection removed = sections.remove(SectionPos.asLong(sectionX, sectionY, sectionZ));
