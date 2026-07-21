@@ -56,6 +56,11 @@ public final class VoxyPerPixel {
     private static boolean operational = false;  // true once a merge has run; tells the cull to stand down
     private static boolean frameActive = false;  // a merge happened this frame -> afterHull must restore
     private static boolean loggedVanillaStandDown = false; // one-shot log for the no-shaderpack gate
+    // Set during ship rendering when at least one ship is camera-visible this frame; cleared at
+    // renderLevel HEAD. The merge only exists to make ship hulls depth-test against Voxy LOD, so on a
+    // frame that draws no hull it is two full-resolution depth copies, two fullscreen passes and a
+    // pile of synchronous glGet* readbacks for nothing -- which is what the 0-ship baseline was paying.
+    private static boolean shipMayRender = false;
     // Voxy merge params resolved by beforeHull, consumed by afterHull in the same frame.
     private static VoxyOcclusion.MergeParams frameParams;
 
@@ -91,6 +96,20 @@ public final class VoxyPerPixel {
     /** True once per-pixel is live; {@link VoxyOcclusion#isOccludedByLod} returns false so ships draw. */
     public static boolean isReplacingCull() {
         return operational && !disabled;
+    }
+
+    /** renderLevel HEAD: forget last frame's ship visibility. */
+    public static void beginFrame() {
+        shipMayRender = false;
+    }
+
+    /**
+     * Called while walking ships for rendering, for each ship the camera can see -- before any
+     * occlusion test, so this is a superset of the ships that actually draw. Tells {@link #beforeHull}
+     * the merge is worth doing this frame.
+     */
+    public static void markShipVisible() {
+        shipMayRender = true;
     }
 
     private static final String VERT = """
@@ -155,6 +174,12 @@ public final class VoxyPerPixel {
                 loggedVanillaStandDown = true;
                 LOGGER.info("[vs perpixel] no shaderpack active -> standing down (Voxy composites LOD depth natively in vanilla)");
             }
+            return;
+        }
+        // Nothing to merge against on a frame with no camera-visible ship. The one exception is before
+        // per-pixel has ever run: that first merge is what flips isReplacingCull(), standing the
+        // whole-ship LOD cull down, so let it happen without waiting for a ship to come into view.
+        if (!shipMayRender && operational) {
             return;
         }
         try {

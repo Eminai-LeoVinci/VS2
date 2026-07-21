@@ -69,6 +69,7 @@ import org.valkyrienskies.mod.common.VSClientGameUtils;
 import org.valkyrienskies.mod.common.config.VSGameConfig;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.VectorConversionsMCKt;
+import org.valkyrienskies.mod.compat.voxy.VoxyPerPixel;
 import org.valkyrienskies.mod.mixin.accessors.client.render.FrustumInvoker;
 import org.valkyrienskies.mod.mixin.accessors.client.render.RenderTypeAccessor;
 
@@ -471,6 +472,12 @@ public final class ShipTerrainMeshCache {
                 if (!shipVisible) {
                     continue;
                 }
+                if (shipCamVisible) {
+                    // Voxy per-pixel LOD merge only has to run on frames that draw hull into the main
+                    // gbuffer. Marked before the occlusion test below, so the merge is never skipped on
+                    // the frame a ship re-emerges from behind LOD terrain.
+                    VoxyPerPixel.markShipVisible();
+                }
                 // VS-VOXY-OCCLUSION: ship is fully behind Voxy LOD terrain (sampled from Voxy's own
                 // depth buffer in MixinLevelRenderer). Keep its baked sections warm so re-emerging is
                 // instant, but suppress the draw below -- this is also what saves the per-frame
@@ -840,8 +847,9 @@ public final class ShipTerrainMeshCache {
      * Frustum-test an already-world-space box (e.g. a ship's render AABB), allocation-free. Null
      * frustum = visible. Same INSIDE/INTERSECT semantics as vanilla {@code isVisible(AABB)}; only for
      * the CAMERA frustum -- Iris shadow frustums override {@code isVisible(AABB)} and need that call.
+     * Public so the block-entity pass can cull whole ships by the same test.
      */
-    private static boolean isWorldBoxVisible(final Frustum frustum,
+    public static boolean isWorldBoxVisible(final Frustum frustum,
         final double minX, final double minY, final double minZ,
         final double maxX, final double maxY, final double maxZ) {
         if (frustum == null) {

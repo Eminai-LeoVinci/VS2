@@ -157,6 +157,9 @@ public abstract class MixinLevelRenderer {
         GpuBufferSlice gpuBufferSlice, Vector4f vector4f, boolean bl2, CallbackInfo ci) {
         this.valkyrienskies$partialTick = deltaTracker.getGameTimeDeltaPartialTick(false);
         this.valkyrienskies$frameCounter++;
+        // Ship visibility is re-established during this frame's ship render, before the Voxy per-pixel
+        // merge at renderAllFeatures HEAD consumes it.
+        VoxyPerPixel.beginFrame();
         final ShipTransform shipMountedRenderTransform = ((IVSCamera) camera).getShipMountedRenderTransform();
         if (valkyrienskies$prevShipMountedToTransform != shipMountedRenderTransform) {
             if (valkyrienskies$prevShipMountedToTransform != null && shipMountedRenderTransform != null) {
@@ -377,15 +380,24 @@ public abstract class MixinLevelRenderer {
                 if (vsLodOccluded.contains(ship.getId())) {
                     continue; // fully behind LOD terrain
                 }
-                // Skip a whole ship's block entities when the ship can't be on screen.
-                if (frustum != null && !frustum.isVisible(VectorConversionsMCKt.toMinecraft(ship.getRenderAABB()))) {
+                // Skip a whole ship's block entities when the ship can't be on screen. Allocation-free
+                // on the render AABB's doubles (this is the camera frustum, which doesn't need the
+                // MC-AABB overload Iris shadow frustums do).
+                final var shipAabb = ship.getRenderAABB();
+                if (!ShipTerrainMeshCache.isWorldBoxVisible(frustum,
+                        shipAabb.minX(), shipAabb.minY(), shipAabb.minZ(),
+                        shipAabb.maxX(), shipAabb.maxY(), shipAabb.maxZ())) {
                     continue;
                 }
                 final ShipTransform renderTransform = ship.getRenderTransform();
                 final Matrix4dc shipToWorld = renderTransform.getShipToWorld();
                 ship.getActiveChunksSet().forEach((chunkX, chunkZ) -> {
                     final LevelChunk chunk = clientLevel.getChunk(chunkX, chunkZ);
-                    for (final BlockEntity blockEntity : chunk.getBlockEntities().values()) {
+                    final java.util.Map<BlockPos, BlockEntity> chunkBlockEntities = chunk.getBlockEntities();
+                    if (chunkBlockEntities.isEmpty()) {
+                        return; // most shipyard chunks hold no block entities at all
+                    }
+                    for (final BlockEntity blockEntity : chunkBlockEntities.values()) {
                         final BlockPos bePos = blockEntity.getBlockPos();
                         // Cull each BE by its section visibility (the same test the cached terrain uses),
                         // so off-screen ship block entities aren't extracted + submitted every frame.
@@ -421,6 +433,8 @@ public abstract class MixinLevelRenderer {
             } else {
                 final PoseStack shipPoseStack = new PoseStack();
                 for (final ClientShip ship : VSGameUtilsKt.getShipObjectWorld(clientLevel).getLoadedShips()) {
+                    // No per-ship frustum cull on this path, so every loaded ship counts as "may draw".
+                    VoxyPerPixel.markShipVisible();
                     if (vsLodOccluded.contains(ship.getId())) {
                         continue; // fully behind LOD terrain
                     }
@@ -491,11 +505,33 @@ public abstract class MixinLevelRenderer {
         if (renderer == null) {
             return;
         }
+
+        final BlockPos pos = blockEntity.getBlockPos();
+        // View-distance cull, the same one vanilla applies to world block entities via
+        // BlockEntityRenderer.shouldRender (default 64 blocks; beacons and the like raise it). The
+        // ship path bypassed it entirely, so a decorated hull re-extracted every chest, sign and
+        // lantern into a fresh render state every frame no matter how far away it was. The BE's
+        // rendered world position is the ship transform applied to its shipyard block centre;
+        // multiply it out here rather than allocating a Vec3 per block entity per frame.
+        final Matrix4dc shipToWorld = renderTransform.getShipToWorld();
+        final double lx = pos.getX() + 0.5;
+        final double ly = pos.getY() + 0.5;
+        final double lz = pos.getZ() + 0.5;
+        final double dx = shipToWorld.m00() * lx + shipToWorld.m10() * ly + shipToWorld.m20() * lz
+            + shipToWorld.m30() - cameraRenderState.pos.x;
+        final double dy = shipToWorld.m01() * lx + shipToWorld.m11() * ly + shipToWorld.m21() * lz
+            + shipToWorld.m31() - cameraRenderState.pos.y;
+        final double dz = shipToWorld.m02() * lx + shipToWorld.m12() * ly + shipToWorld.m22() * lz
+            + shipToWorld.m32() - cameraRenderState.pos.z;
+        final double viewDistance = renderer.getViewDistance();
+        if (dx * dx + dy * dy + dz * dz >= viewDistance * viewDistance) {
+            return;
+        }
+
         final BlockEntityRenderState renderState = renderer.createRenderState();
         renderer.extractRenderState(blockEntity, renderState, this.valkyrienskies$partialTick,
             cameraRenderState.pos, null);
 
-        final BlockPos pos = blockEntity.getBlockPos();
         poseStack.pushPose();
         VSClientGameUtils.transformRenderWithShip(renderTransform, poseStack,
             pos.getX(), pos.getY(), pos.getZ(),
