@@ -148,6 +148,16 @@ public abstract class MixinLivingEntity {
         vs$prevShipRelPos = currentShipRel;
         vs$prevShipRelId = shipId;
 
+        // Dead-zone: sub-walking ship-relative drift (the client's lerped entity position catching
+        // up to a moving/turning ship frame) must not read as walking. Vanilla models rendered the
+        // residual invisibly small (limb swing scales with the tiny speed), but animation packs
+        // (Fresh Animations via EMF) key pronounced leg/hip cycles off ANY nonzero limb speed --
+        // a still cow "walked in place" and the FA player rig hip-bobbed on a turning ship. Real
+        // walking is >= ~0.05 blocks/tick ship-relative (sneak ~0.04); drift stays under ~0.02.
+        if (speedSignal < 0.03F) {
+            speedSignal = 0.0F;
+        }
+
         self.walkAnimation.update(Math.min(speedSignal * 4.0F, 1.0F), 0.4F, self.isBaby() ? 3.0F : 1.0F);
         ci.cancel();
     }
