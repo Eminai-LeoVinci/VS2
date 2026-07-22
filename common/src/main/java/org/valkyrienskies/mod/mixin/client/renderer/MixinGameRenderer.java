@@ -296,13 +296,16 @@ public abstract class MixinGameRenderer {
         // Ship-mount riders (helm, reconnect auto-seat, sit-down hotkey seat) get a custom F5 cycle, driven by
         // ShipMountPerspective via the fabric start-of-tick F5 drain:
         //   FIRST_PERSON       -> vanilla 1st person (no ship-mount, normal eye view)
+        //   THIRD_PERSON_BACK  -> plain vanilla 3rd person, behind the player
+        //   THIRD_PERSON_FRONT -> plain vanilla 3rd person, facing the player
         //   ship view          -> ship-mounted 3rd person (pulled-back scroll-zoomable BEHIND-the-player view; a
         //                         VIRTUAL slot flagged in ShipMountPerspective on top of THIRD_PERSON_BACK, so the
         //                         player's back faces the camera -- natural, non-inverted pitch. Vanilla's
-        //                         CameraType enum can't grow a 4th value, hence the piggy-back.)
+        //                         CameraType enum can't grow a 4th value, hence the piggy-back. 1.21.x rides the
+        //                         virtual slot on THIRD_PERSON_FRONT; here the mirrored front slot is what made
+        //                         the ship view feel pitch-inverted, so it rides on BACK and is told apart from
+        //                         the plain back slot by ShipMountPerspective's flag.)
         //   Shoulder Surfing   -> only when that mod is installed; then back to FIRST_PERSON.
-        // (The old plain THIRD_PERSON_BACK / mirrored THIRD_PERSON_FRONT stops were dropped -- the mirrored front
-        // slot is what made the ship view feel pitch-inverted.)
         // Sitting (never happens for a plain ShipMountingEntity, kept for parity): thirdPerson follows the user's
         // F5 state, mirror follows CameraType.isMirrored().
         final boolean standing =

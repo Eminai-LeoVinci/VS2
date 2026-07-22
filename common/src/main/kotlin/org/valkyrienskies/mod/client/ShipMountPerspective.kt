@@ -8,14 +8,17 @@ import net.minecraft.client.Minecraft
  * sit-down hotkey seat).
  *
  * Vanilla's CameraType enum only has three values, so the immersive ship-mounted view can't be a
- * real camera type. Instead it is a VIRTUAL slot layered on top of THIRD_PERSON_BACK: [shipView]
- * marks it active and MixinGameRenderer engages the pulled-back ship camera; the underlying camera
- * type stays THIRD_PERSON_BACK so the player's BACK faces the camera -- a natural behind-the-player
- * view. (It used to ride on THIRD_PERSON_FRONT, which put the player FACING the camera; that
- * mirrored slot is what made the ship view's pitch feel inverted, so it was dropped.) The mounted
- * cycle now has a single, back-facing 3rd-person slot:
+ * real camera type. Instead it is a VIRTUAL fourth slot layered on top of THIRD_PERSON_BACK:
+ * [shipView] marks it active and MixinGameRenderer engages the pulled-back ship camera; the
+ * underlying camera type stays THIRD_PERSON_BACK so the player's BACK faces the camera -- a natural
+ * behind-the-player view. The plain back slot is told apart from the ship view by the [shipView]
+ * flag alone, not by camera type.
  *
- *   FIRST_PERSON -> ship view (behind the player, scroll-zoomable)
+ * (1.21.x rides the virtual slot on THIRD_PERSON_FRONT instead. Here it stays on BACK: the mirrored
+ * front slot is what made this version's ship view feel pitch-inverted. The player-visible cycle is
+ * the same four stops either way -- only which vanilla slot the virtual one piggy-backs differs.)
+ *
+ *   FIRST_PERSON -> THIRD_PERSON_BACK -> THIRD_PERSON_FRONT -> ship view (scroll-zoomable)
  *     -> Shoulder Surfing (only when that mod is installed) -> FIRST_PERSON
  *
  * The cycle is driven from the platform START-of-client-tick hook, which drains the F5 key while
@@ -83,16 +86,21 @@ object ShipMountPerspective {
             }
             // Shoulder Surfing active (via our cycle or SSR's own hotkeys). SSR intercepts
             // Options.setCameraType, so a plain set both changes the slot and clears its shoulder
-            // state. There is no longer a front stop, so exiting SSR always wraps to first person.
+            // state. Shoulder Surfing is the last stop, so exiting it wraps to first person.
             ShoulderSurfingCompat.isShoulderSurfing() -> {
                 withVanillaToggleParity(mc) { mc.options.cameraType = CameraType.FIRST_PERSON }
             }
-            // Anything else (first person, or a stray third-person slot) -> the single virtual
-            // ship-view slot: a back-facing, scroll-zoomable behind-the-player camera. Engaging it
-            // needs the underlying vanilla slot to be THIRD_PERSON_BACK (player's back to camera);
-            // set that, then flag the virtual slot so MixinGameRenderer swaps in the pulled-back
-            // ship camera. There is no separate plain back/front stop -- this is the only mounted
-            // 3rd-person view.
+            mc.options.cameraType == CameraType.FIRST_PERSON -> {
+                withVanillaToggleParity(mc) { mc.options.cameraType = CameraType.THIRD_PERSON_BACK }
+            }
+            // Plain back view -- shipView is false here, since the ship view was caught above.
+            mc.options.cameraType == CameraType.THIRD_PERSON_BACK -> {
+                withVanillaToggleParity(mc) { mc.options.cameraType = CameraType.THIRD_PERSON_FRONT }
+            }
+            // THIRD_PERSON_FRONT (or any stray slot) -> the virtual ship-view slot: a back-facing,
+            // scroll-zoomable behind-the-player camera. Engaging it needs the underlying vanilla slot
+            // to be THIRD_PERSON_BACK (player's back to camera, non-inverted pitch); set that, then
+            // flag the virtual slot so MixinGameRenderer swaps in the pulled-back ship camera.
             else -> {
                 if (mc.options.cameraType != CameraType.THIRD_PERSON_BACK) {
                     withVanillaToggleParity(mc) { mc.options.cameraType = CameraType.THIRD_PERSON_BACK }
