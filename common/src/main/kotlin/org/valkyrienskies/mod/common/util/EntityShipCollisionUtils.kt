@@ -20,9 +20,11 @@ import org.valkyrienskies.core.internal.collision.VsiConvexPolygonc
 import org.valkyrienskies.core.util.extend
 import org.valkyrienskies.core.util.toAABBd
 import org.valkyrienskies.core.api.ships.properties.ShipId
+import org.valkyrienskies.core.api.world.properties.DimensionId
 import org.valkyrienskies.mod.common.allShips
 import org.valkyrienskies.mod.common.dimensionId
 import org.valkyrienskies.mod.common.getLoadedShipManagingPos
+import org.valkyrienskies.mod.common.getShipsIntersecting
 import org.valkyrienskies.mod.common.shipObjectWorld
 import org.valkyrienskies.mod.common.vsCore
 import org.valkyrienskies.mod.mixinducks.feature.tickets.PlayerKnownShipsDuck
@@ -64,6 +66,55 @@ object EntityShipCollisionUtils {
         }
         return true
     }
+
+    /**
+     * Shared per-entity-per-tick "which ships are near this entity's feet" CANDIDATE query. Walk-anim,
+     * the drag-standing stamp, and the standing-on probes (getBlockPosBelowThatAffectsMyMovement /
+     * getOnPos / sprint particles) previously each issued their own spatial query -- up to 4 per living
+     * entity per tick; this runs ONE and memoizes it on the entity's dragging info for the tick.
+     *
+     * The probe box is a padded UNION of every caller's box (XZ +-1.0; Y from y-1.5 to y+0.5, containing
+     * the walk-anim +-0.4/-1.0..+0.1 box and both 0.5-radius standing probes incl. their one-block-below
+     * fence checks, with slack for within-tick movement between move() and the later probes). Callers
+     * MUST still run their own per-ship validation (block-under-feet check, or an exact ship-AABB
+     * intersect) -- this list is a superset of every individual query's result, never a substitute.
+     *
+     * Returns an empty list when the world has no ships (the common case) without querying.
+     */
+    @JvmStatic
+    fun shipsNearEntityFeet(entity: Entity): List<Ship> {
+        val level = entity.level()
+        val info = (entity as? IEntityDraggingInformationProvider)?.draggingInformation
+        if (info != null && info.footShipsQueryTick == level.gameTime && info.footShipsQueryLevel === level) {
+            return info.footShipsQueryResult
+        }
+        val result: List<Ship>
+        if (level.allShips.none()) {
+            result = emptyList()
+        } else {
+            val x = entity.x
+            val y = entity.y
+            val z = entity.z
+            val union = AABBd(x - 1.0, y - 1.5, z - 1.0, x + 1.0, y + 0.5, z + 1.0)
+            val iter = level.getShipsIntersecting(union).iterator()
+            if (!iter.hasNext()) {
+                result = emptyList()
+            } else {
+                val list = ArrayList<Ship>(2)
+                while (iter.hasNext()) {
+                    list.add(iter.next())
+                }
+                result = list
+            }
+        }
+        if (info != null) {
+            info.footShipsQueryTick = level.gameTime
+            info.footShipsQueryLevel = level
+            info.footShipsQueryResult = result
+        }
+        return result
+    }
+
     private const val PARTICLE_COLLISION_BOX_EXPANSION = 0.00390625 //1.0 / 256.0
 
     private val collider = vsCore.entityPolygonCollider
@@ -100,6 +151,62 @@ object EntityShipCollisionUtils {
     private var lastCacheSweepClient = Long.MIN_VALUE
     private const val CACHE_SWEEP_INTERVAL_TICKS = 1200L // drop entries for deleted ships ~once a minute
 
+    /**
+     * Per-dimension, per-tick snapshot of the ships the unloaded-ship guard has to test, paired with
+     * their rough world AABBs.
+     *
+     * [isCollidingWithUnloadedShips] runs at the HEAD of every [Entity.move] call, and it used to walk
+     * the WHOLE ship world there -- every ship in every dimension -- rejecting the wrong-dimension ones
+     * with a string compare and looking each survivor's AABB up in a concurrent map. That work is
+     * identical for every entity in a dimension within a tick, so it is now done once and the per-entity
+     * path scans two plain arrays.
+     *
+     * Invalidated when the tick advances OR the ship count changes, so a ship assembled or removed
+     * mid-tick is never tested against a stale list. A ship that changes DIMENSION mid-tick can be
+     * one tick stale, exactly as its rough AABB already could be.
+     *
+     * The AABBs are the live per-tick cache entries from [roughWorldAABB], which are only rewritten
+     * when the tick advances -- the same event that invalidates this snapshot.
+     */
+    private class DimShipSnapshot(
+        val gameTime: Long,
+        val shipCount: Int,
+        val ships: Array<Ship>,
+        val aabbs: Array<AABBdc>
+    )
+
+    private val emptyShips = emptyArray<Ship>()
+    private val emptyAabbs = emptyArray<AABBdc>()
+    private val dimSnapshotsServer = ConcurrentHashMap<DimensionId, DimShipSnapshot>()
+    private val dimSnapshotsClient = ConcurrentHashMap<DimensionId, DimShipSnapshot>()
+
+    private fun dimShipSnapshot(level: Level): DimShipSnapshot {
+        val cache = if (level.isClientSide) dimSnapshotsClient else dimSnapshotsServer
+        val dimensionId = level.dimensionId
+        val gameTime = level.gameTime
+        val allShips = level.allShips
+        val shipCount = allShips.size
+        val cached = cache[dimensionId]
+        if (cached != null && cached.gameTime == gameTime && cached.shipCount == shipCount) {
+            return cached
+        }
+        val snapshot: DimShipSnapshot
+        if (shipCount == 0) {
+            snapshot = DimShipSnapshot(gameTime, 0, emptyShips, emptyAabbs)
+        } else {
+            val ships = ArrayList<Ship>(shipCount)
+            val aabbs = ArrayList<AABBdc>(shipCount)
+            for (ship in allShips) {
+                if (ship.chunkClaimDimension != dimensionId) continue
+                ships.add(ship)
+                aabbs.add(roughWorldAABB(ship, level, gameTime))
+            }
+            snapshot = DimShipSnapshot(gameTime, shipCount, ships.toTypedArray(), aabbs.toTypedArray())
+        }
+        cache[dimensionId] = snapshot
+        return snapshot
+    }
+
     private fun roughWorldAABB(ship: Ship, level: Level, gameTime: Long): AABBdc {
         val cache: ConcurrentHashMap<ShipId, RoughAABBEntry>
         if (level.isClientSide) {
@@ -134,18 +241,20 @@ object EntityShipCollisionUtils {
                 return true
             }
 
-            val allShips = level.allShips
-            if (allShips.none()) {
+            // Plain array scan over the per-tick dimension snapshot instead of a Stream pipeline (or a
+            // walk of every ship in every dimension): this runs at the HEAD of every Entity.move()
+            // call, so per-entity allocation, lambda overhead and repeated dimension filtering matter.
+            val snapshot = dimShipSnapshot(level)
+            val ships = snapshot.ships
+            if (ships.isEmpty()) {
                 return false
             }
-
-            // Plain loop with early exit instead of a Stream pipeline: this runs at the HEAD of
-            // every Entity.move() call, so per-entity allocation and lambda overhead matter.
+            val aabbs = snapshot.aabbs
             val gameTime = level.gameTime
             val aabb = entity.boundingBox.toJOML()
-            for (ship in allShips) {
-                if (ship.chunkClaimDimension != level.dimensionId) continue
-                if (!roughWorldAABB(ship, level, gameTime).intersectsAABB(aabb)) continue
+            for (i in ships.indices) {
+                val ship = ships[i]
+                if (!aabbs[i].intersectsAABB(aabb)) continue
                 // Skip collision check for recently-spawned ships whose chunks are still
                 // loading. Without this, spawning a new ship near a player would freeze
                 // them because isCollidingWithUnloadedShips returns true (the new ship's
@@ -261,14 +370,15 @@ object EntityShipCollisionUtils {
         if (isInWorldFreeze(entity)) return true
         val level = entity.level()
         if (!(level is ServerLevel || (level.isClientSide && level is ClientLevel))) return false
-        val allShips = level.allShips
-        if (allShips.none()) return false
+        val snapshot = dimShipSnapshot(level)
+        val ships = snapshot.ships
+        if (ships.isEmpty()) return false
+        val aabbs = snapshot.aabbs
         val gameTime = level.gameTime
         val aabb = entity.boundingBox.toJOML()
-        for (ship in allShips) {
-            if (ship.chunkClaimDimension != level.dimensionId) continue
-            if (!roughWorldAABB(ship, level, gameTime).intersectsAABB(aabb)) continue
-            if (isInSpawnGracePeriod(ship.id, gameTime)) return true
+        for (i in ships.indices) {
+            if (!aabbs[i].intersectsAABB(aabb)) continue
+            if (isInSpawnGracePeriod(ships[i].id, gameTime)) return true
         }
         return false
     }
