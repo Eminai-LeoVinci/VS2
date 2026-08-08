@@ -112,13 +112,17 @@ object EntityShipCollisionUtils {
     }
 
     /**
-     * Ship-transition fall-through hold keyed on a WORLD-space AABB (not a ship id) so it survives the ship
-     * being REMOVED from the world — used for DISASSEMBLY, where the shipyard collision vanishes for a split
-     * second before the world blocks become collidable and on-ship entities (player, mobs, armor stands) would
-     * drop a block + scatter. Armed before AND after the teardown from Eureka's ShipHelmBlockEntity.disassemble;
+     * Ship-transition fall-through hold keyed on a WORLD-space AABB rather than a ship id, so it does not
+     * depend on a ship existing or on its chunk set being populated — which is exactly the state of affairs
+     * during a swap in either direction. Both ends of the trip need it: DISASSEMBLY, where the shipyard
+     * collision vanishes for a split second before the world blocks become collidable, and ASSEMBLY, where the
+     * world blocks are lifted out before the shipyard copy is collidable. On-ship entities (player, mobs,
+     * armor stands) would otherwise drop a block and scatter.
+     *
+     * Armed before AND after the swap from Eureka's ShipHelmBlockEntity, in `assemble` and `disassemble`;
      * checked at the TOP of [isCollidingWithUnloadedShips], before the allShips early-out, so it still applies
-     * once the ship is gone. Bounded by a wall-clock deadline; entries self-expire. (Login + assembly reuse the
-     * ship-id [recentlySpawnedShips] path instead, since the ship still exists there.)
+     * once the ship is gone. Bounded by a wall-clock deadline; entries self-expire. (Login keeps using the
+     * ship-id [recentlySpawnedShips] path, since the ship plainly exists there.)
      */
     private class WorldFreezeEntry(val dimensionId: String, val aabb: AABBd, val deadlineNanos: Long)
     private val worldFreezes = ConcurrentLinkedQueue<WorldFreezeEntry>()
@@ -172,18 +176,25 @@ object EntityShipCollisionUtils {
 
     /**
      * Whether [entity]'s GRAVITY (only) should be held this tick: it is in a ship-transition zone where the
-     * deck collision isn't solid yet -- a DISASSEMBLY world-freeze, OR over a freshly-loaded/assembled ship
-     * still in its spawn-grace (login / assembly). Used by MixinEntity.vs$holdGravityDuringShipTransition to
+     * deck collision isn't solid yet -- an ASSEMBLY or DISASSEMBLY world-freeze, OR over a freshly-loaded ship
+     * still in its spawn-grace (login). Used by MixinEntity.vs$holdGravityDuringShipTransition to
      * clamp ONLY the downward movement, so the entity keeps full X/Z + camera control but cannot fall through.
      * Deadline-bounded by both [worldFreezes] and [recentlySpawnedShips], so it never holds forever.
      */
     @JvmStatic
     fun shouldHoldGravity(entity: Entity): Boolean {
-        // MOBS / ENTITIES ONLY. Players are excluded: confirmed in-world they never fall through on a
-        // login/assembly/disassembly transition, and the downward-clamp made elytra gliding feel floaty
-        // (like slow-falling). Excluding them keeps player flight + gravity completely vanilla.
-        if (entity is Player) return false
+        // EXPLICIT transition window: everything in it is held, PLAYERS INCLUDED. A world-freeze is only ever
+        // armed by the code performing an assembly or a disassembly, over that hull's own footprint, for about
+        // two seconds -- so a player is held exactly when the deck under them is mid-swap and provably not
+        // collidable. Players were excluded from BOTH paths originally, on the reading that they never fell
+        // through; they do, just less often than mobs, because the window they have to be inside is short.
         if (isInWorldFreeze(entity)) return true
+        // PASSIVE spawn-grace: mobs and other entities only. This one fires for any freshly loaded or
+        // assembled ship an entity happens to be standing over, including ones nobody is interacting with, so
+        // it is far broader in time and space than a world-freeze -- and clamping a player's descent inside it
+        // is what made elytra gliding near ships feel floaty, like permanent slow-falling. Keeping players out
+        // of THIS path is what that exclusion was actually protecting.
+        if (entity is Player) return false
         val level = entity.level()
         if (!(level is ServerLevel || (level.isClientSide && level is ClientLevel))) return false
         val snapshot = dimShipSnapshot(level)
