@@ -355,6 +355,22 @@ object RecipeOverrides {
             )
         }
 
+        // Ship Bottle:  _ E _   _ H _   _ B _
+        // (E=eye of ender, H=heart of the sea, B=glass bottle) -- an Armada item rather than a classic
+        // Eureka one, but it lives here so it is retunable from the same config as everything else.
+        // The padding columns are stripped when the pattern is parsed, so this works in any column.
+        root.add(
+            "vs_eureka:ship_bottle",
+            shaped(
+                listOf(
+                    none(), s("minecraft:ender_eye"), none(),
+                    none(), s("minecraft:heart_of_the_sea"), none(),
+                    none(), s("minecraft:glass_bottle"), none()
+                ),
+                "vs_eureka:ship_bottle", 1
+            )
+        )
+
         return root
     }
 }
