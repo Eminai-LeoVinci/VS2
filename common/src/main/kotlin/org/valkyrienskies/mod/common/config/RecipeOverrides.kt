@@ -371,6 +371,16 @@ object RecipeOverrides {
             )
         )
 
+        // Ship Blueprint: shapeless paper + lapis. Cheap on purpose -- a blueprint costs nothing to draft and
+        // is worth nothing until a shipwright reads it; the price of a ship is the materials list inside.
+        root.add(
+            "vs_eureka:blueprint",
+            shapeless(
+                listOf(s("minecraft:paper"), s("minecraft:lapis_lazuli")),
+                "vs_eureka:blueprint", 1
+            )
+        )
+
         return root
     }
 }
