@@ -13,10 +13,15 @@ import java.nio.file.Path
 /**
  * Config-driven crafting recipe overrides.
  *
- * Reads `config/vs_eureka_recipes.json` (a friendly 9-slot format) and converts each entry into a
+ * Reads `config/vs_eureka_armada_recipes.json` (a friendly 9-slot format) and converts each entry into a
  * standard Minecraft crafting-recipe JSON. [org.valkyrienskies.mod.mixin.feature.config_recipes.MixinRecipeManager]
  * feeds those to `RecipeManager.fromJson` at recipe-load time, REPLACING the matching built-in
  * recipe (matched by id). Re-read on every recipe (re)load, so `/reload` picks up edits live.
+ *
+ * The name is Armada's, not `vs_eureka_recipes.json`: that one belongs to Eureka Ships, and the two mods
+ * ship different recipes. Since this file is only ever written when ABSENT, a shared name would mean
+ * whichever mod ran first froze its recipe set in place and the other silently inherited it. Armada keeps
+ * its own; Eureka Ships' file is neither read nor touched.
  *
  * - File absent  -> the bundled defaults are written out, then loaded.
  * - File present -> parsed; malformed entries are skipped (built-in recipe left intact); a wholly
@@ -41,7 +46,7 @@ import java.nio.file.Path
  */
 object RecipeOverrides {
     private val logger by logger()
-    private val CONFIG_FILE: Path = Path.of("config", "vs_eureka_recipes.json")
+    private val CONFIG_FILE: Path = Path.of("config", "vs_eureka_armada_recipes.json")
     private val gson = GsonBuilder().setPrettyPrinting().create()
 
     private var overrideCache: Map<String, JsonObject> = LinkedHashMap()
@@ -254,7 +259,7 @@ object RecipeOverrides {
         val root = JsonObject()
         root.addProperty(
             "_README",
-            "vs_eureka recipe overrides (defaults = the original Eureka recipes). 9 slots: 1=top-left .. " +
+            "Eureka Armada recipe overrides (defaults = Armada's own recipes). 9 slots: 1=top-left .. " +
                 "5=centre .. 9=bottom-right. Slot = \"namespace:item\", \"#namespace:tag\", [\"a\",\"b\"] for " +
                 "alternatives, or \"\" for empty. type=shaped|shapeless, plus result + count. Set a recipe to " +
                 "\"remove\" to disable it. Edit then /reload."

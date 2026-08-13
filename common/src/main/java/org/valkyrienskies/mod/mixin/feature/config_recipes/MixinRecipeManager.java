@@ -24,7 +24,7 @@ import org.valkyrienskies.mod.common.config.RecipeOverrides;
 
 /**
  * Config-driven crafting recipe overrides. At recipe (re)load, swaps the freshly-built {@link RecipeMap}
- * for one in which any recipe id listed in {@code config/vs_eureka_recipes.json} is replaced (or removed).
+ * for one in which any recipe id listed in {@code config/vs_eureka_armada_recipes.json} is replaced (or removed).
  * Recipes are built by handing config-derived JSON to vanilla's own {@code RecipeManager.fromJson}, so
  * tags, ingredient-lists and shaped/shapeless parsing all behave exactly like a datapack recipe.
  *
