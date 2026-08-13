@@ -381,6 +381,32 @@ object RecipeOverrides {
             )
         )
 
+        // Cannonballs = 8:  N I N   I I I   N I N
+        // (I=ingot in a plus, N=that metal's nugget in the corners). Eight to a batch because a gun deck
+        // eats them and they only stack to 16 -- shot is meant to be bulky to keep, not tedious to make.
+        //
+        // Netherite has no nugget, so it takes raw gold in the corners instead. That is not a filler
+        // substitution: netherite is smithed WITH gold, so gold in the corners is the material already in
+        // its lineage, and it keeps the most expensive round in the game visibly the most expensive.
+        for ((ball, ingot, corner) in listOf(
+            Triple("copper", "minecraft:copper_ingot", "minecraft:copper_nugget"),
+            Triple("iron", "minecraft:iron_ingot", "minecraft:iron_nugget"),
+            Triple("gold", "minecraft:gold_ingot", "minecraft:gold_nugget"),
+            Triple("netherite", "minecraft:netherite_ingot", "minecraft:raw_gold")
+        )) {
+            root.add(
+                "vs_eureka:${ball}_cannonball",
+                shaped(
+                    listOf(
+                        s(corner), s(ingot), s(corner),
+                        s(ingot), s(ingot), s(ingot),
+                        s(corner), s(ingot), s(corner)
+                    ),
+                    "vs_eureka:${ball}_cannonball", 8, "cannonballs"
+                )
+            )
+        }
+
         return root
     }
 }
