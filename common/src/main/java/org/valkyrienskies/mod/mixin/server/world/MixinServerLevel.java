@@ -19,6 +19,7 @@ import net.minecraft.core.Position;
 import net.minecraft.core.SectionPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ChunkHolder;
+import net.minecraft.server.level.ChunkMap;
 import net.minecraft.server.level.ChunkResult;
 import net.minecraft.server.level.ServerChunkCache;
 import net.minecraft.server.level.ServerLevel;
@@ -213,6 +214,54 @@ public abstract class MixinServerLevel implements IShipObjectWorldServerProvider
         final Vector3d posInWorld = ship.getShipToWorld().transformPosition(VectorConversionsMCKt.toJOML(particle));
 
         return posInWorld.distanceSquared(player.getX(), player.getY(), player.getZ()) < distance * distance;
+    }
+
+    /**
+     * Measure the fire-spread player radius from where a ship block actually <em>is</em>.
+     *
+     * <p>1.21.11 replaced the {@code doFireTick} boolean with
+     * {@code fire_spread_radius_around_player}, and {@code FireBlock.tick} now begins:
+     *
+     * <pre>
+     *     level.scheduleTick(pos, this, getFireTickDelay(...));   // reschedules first...
+     *     if (!level.canSpreadFireAround(pos)) return;            // ...then bails
+     * </pre>
+     *
+     * <p>{@code canSpreadFireAround} ends up at {@code ChunkMap.anyPlayerCloseEnoughTo}, which compares
+     * the position against every player's <em>world</em> position. A fire on a ship lives at a shipyard
+     * position hundreds of thousands of blocks away, so the check is unconditionally false and fire on a
+     * ship never ages, never spreads and never burns out — while the tick stays queued forever, because
+     * the reschedule happens before the bail.
+     *
+     * <p>So transform the position the same way {@link #includeShipsInParticleDistanceCheck} does and let
+     * vanilla apply its own radius to it. Fire aboard a ship near a player behaves normally; fire on a ship
+     * far from every player stays frozen, which is exactly what the gamerule is for.
+     */
+    @WrapOperation(
+        method = "canSpreadFireAround",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ChunkMap;anyPlayerCloseEnoughTo(Lnet/minecraft/core/BlockPos;I)Z"
+        )
+    )
+    private boolean vs$measureFireSpreadFromWorldPosition(
+        final ChunkMap chunkMap, final BlockPos pos, final int radius,
+        final Operation<Boolean> anyPlayerCloseEnoughTo) {
+
+        final ServerLevel self = ServerLevel.class.cast(this);
+        final LoadedServerShip ship = VSGameUtilsKt.getLoadedShipManagingPos(
+            self, pos.getX() >> 4, pos.getZ() >> 4);
+
+        if (ship == null) {
+            // vanilla behaviour
+            return anyPlayerCloseEnoughTo.call(chunkMap, pos, radius);
+        }
+
+        final Vector3d posInWorld =
+            ship.getShipToWorld().transformPosition(VectorConversionsMCKt.toJOML(pos.getCenter()));
+
+        return anyPlayerCloseEnoughTo.call(
+            chunkMap, BlockPos.containing(posInWorld.x, posInWorld.y, posInWorld.z), radius);
     }
 
     @Unique

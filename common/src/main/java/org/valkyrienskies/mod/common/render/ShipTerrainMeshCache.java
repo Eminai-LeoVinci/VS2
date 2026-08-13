@@ -31,6 +31,8 @@ import java.util.Map;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 import java.util.function.Supplier;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandler;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandlerRegistry;
 import net.fabricmc.fabric.api.renderer.v1.render.BlockVertexConsumerProvider;
 import net.fabricmc.fabric.api.renderer.v1.render.FabricBlockModelRenderer;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -38,6 +40,8 @@ import net.minecraft.client.renderer.DynamicUniforms;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.block.BlockRenderDispatcher;
+import net.minecraft.client.renderer.block.model.BakedQuad;
+import net.minecraft.client.renderer.block.model.BlockModelPart;
 import net.minecraft.client.renderer.block.model.BlockStateModel;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.culling.Frustum;
@@ -46,7 +50,9 @@ import net.minecraft.client.renderer.rendertype.RenderSetup;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.OverlayTexture;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.RandomSource;
 import net.minecraft.world.level.block.RenderShape;
@@ -69,6 +75,7 @@ import org.valkyrienskies.mod.common.VSClientGameUtils;
 import org.valkyrienskies.mod.common.config.VSGameConfig;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
 import org.valkyrienskies.mod.common.util.VectorConversionsMCKt;
+import org.valkyrienskies.mod.compat.SodiumCompat;
 import org.valkyrienskies.mod.compat.voxy.VoxyPerPixel;
 import org.valkyrienskies.mod.mixin.accessors.client.render.FrustumInvoker;
 import org.valkyrienskies.mod.mixin.accessors.client.render.RenderTypeAccessor;
@@ -275,11 +282,18 @@ public final class ShipTerrainMeshCache {
         boolean cameraVisible, boolean shadowVisible) {
     }
 
+    private static final TextureAtlasSprite[] NO_SPRITES = new TextureAtlasSprite[0];
+
     private static final class CachedSection {
         // Translucent geometry: re-emitted immediately each frame (keeps per-frame depth sorting).
         final List<Built> built = new ArrayList<>(1);
         // Solid/cutout/tripwire geometry: persistent GPU buffers, redrawn with a transform each frame.
         final List<GpuMesh> gpuMeshes = new ArrayList<>(2);
+        // Animated sprites this section's blocks use, collected at bake time. Sodium only advances a
+        // sprite's animation if something marked it active that tick, and it never sees our geometry --
+        // so every frame this section is drawn we have to report these by hand or they freeze.
+        // Empty for the overwhelming majority of sections, which makes the per-frame cost nothing.
+        TextureAtlasSprite[] animatedSprites = NO_SPRITES;
         long lastUsedFrame;
         // Cached shadow-frustum verdict for camera-culled sections, recomputed every few frames
         // (staggered by section key). The shadow frustum is a large, slow-moving box, so brief
@@ -581,6 +595,14 @@ public final class ShipTerrainMeshCache {
                         final boolean queueGpu = !cached.gpuMeshes.isEmpty();
                         if (!emitTranslucent && !queueGpu) {
                             continue;
+                        }
+
+                        // Tell Sodium these sprites are on screen, or it will not animate them: it only
+                        // advances sprites something marked active this tick, and our geometry never
+                        // reaches its render lists. Camera-visible only -- a section that exists purely to
+                        // cast a shadow is not "visible", and the shadow map is depth-only anyway.
+                        if (camVisible && cached.animatedSprites.length != 0) {
+                            SodiumCompat.markSpritesActive(cached.animatedSprites);
                         }
 
                         // One ship pose per section; section-local [0,16] vertices map to render space
@@ -930,6 +952,25 @@ public final class ShipTerrainMeshCache {
         final boolean captureBlockIds = frameBlockIds;
         final Map<RenderType, CountingVertexConsumer> counters = captureBlockIds ? new HashMap<>(4) : null;
         final short[] currentBlockId = {-1};
+
+        // Animated-sprite tracking for Sodium (see CachedSection.animatedSprites).
+        //
+        // Which sprites a block draws with is a per-POSITION question, not a per-state one: a weighted
+        // model picks its variant from state.getSeed(pos), and fire is exactly that -- fire_0 and fire_1
+        // are separate animated sprites chosen per block. Sampling one variant per state (which this did)
+        // left whichever half of the flames drew the other sprite frozen, and it looked intermittent
+        // because marking is atlas-global: any one block using fire_1 anywhere unfreezes every fire_1.
+        //
+        // So the walk below is exact, seeded the same way the renderer seeds itself. The per-state map is
+        // only a filter for whether that walk is worth doing at all -- the answer is no for virtually
+        // every block, and that is what keeps this off the hot path. Being per-bake, it also cannot carry
+        // a sprite from a previous atlas across a resource reload.
+        final boolean trackSprites = SodiumCompat.tracksSpriteAnimation();
+        final Map<BlockState, Boolean> animatingStates = trackSprites ? new HashMap<>() : null;
+        final List<TextureAtlasSprite> sectionSprites = trackSprites ? new ArrayList<>(0) : null;
+        // Never the caller's RandomSource: reseeding that to match a block would perturb whatever the
+        // renderer is using it for.
+        final RandomSource spriteRandom = trackSprites ? RandomSource.create() : null;
         // Resolve the shaderpack block-id map ONCE per bake (instead of a reflective lookup per block); the
         // per-block id is then a plain map.getInt. Null when not capturing / no pack -> every id stays -1.
         final Object blockIdMap = captureBlockIds ? ShipTerrainIrisPipeline.blockIdMap() : null;
@@ -959,6 +1000,19 @@ public final class ShipTerrainMeshCache {
                         final BlockPos posWorld = new BlockPos(baseX + lx, baseY + ly, baseZ + lz);
 
                         final FluidState fluidState = state.getFluidState();
+
+                        if (trackSprites) {
+                            Boolean animates = animatingStates.get(state);
+                            if (animates == null) {
+                                animates = couldAnimate(level, posWorld, state, fluidState, dispatcher,
+                                    spriteRandom);
+                                animatingStates.put(state, animates);
+                            }
+                            if (animates) {
+                                collectAnimatedAt(level, posWorld, state, fluidState, dispatcher,
+                                    spriteRandom, sectionSprites);
+                            }
+                        }
                         if (!fluidState.isEmpty()) {
                             // LiquidBlockRenderer emits section-local [0,16] coords (no PoseStack), which
                             // is exactly our cache space -- feed it straight in.
@@ -1012,7 +1066,110 @@ public final class ShipTerrainMeshCache {
                 backing.close();
             }
         }
+        if (trackSprites && !sectionSprites.isEmpty()) {
+            result.animatedSprites = sectionSprites.toArray(new TextureAtlasSprite[0]);
+        }
         return result;
+    }
+
+    /** How many variants to try before deciding a state has no animated sprite to offer. */
+    private static final int VARIANT_PROBES = 8;
+
+    /**
+     * Add the animated sprites this block draws with <em>at this position</em>.
+     *
+     * <p>Seeded exactly as the renderer seeds itself, so a weighted model resolves to the same variant we
+     * are about to emit geometry for. Both halves of what {@link #bake} emits are covered: the fluid,
+     * whose sprites come from Fabric's fluid render handler -- the same source {@code renderLiquid} uses,
+     * so a modded fluid is handled like a vanilla one -- and the block model's own quads.
+     */
+    private static void collectAnimatedAt(final ClientLevel level, final BlockPos pos,
+        final BlockState state, final FluidState fluidState, final BlockRenderDispatcher dispatcher,
+        final RandomSource random, final List<TextureAtlasSprite> out) {
+
+        if (!fluidState.isEmpty()) {
+            final FluidRenderHandler handler =
+                FluidRenderHandlerRegistry.INSTANCE.get(fluidState.getType());
+            if (handler != null) {
+                addAnimated(handler.getFluidSprites(level, pos, fluidState), out);
+            }
+        }
+
+        if (state.getRenderShape() == RenderShape.MODEL) {
+            random.setSeed(state.getSeed(pos));
+            addAnimatedParts(dispatcher.getBlockModel(state), random, out);
+        }
+    }
+
+    /**
+     * Whether this state is worth walking per-position at all.
+     *
+     * <p>Only a filter, so sampling is fine here where it would not be above: a handful of variants is
+     * enough to notice that a block animates, and the exact walk then decides which sprite it actually
+     * uses. Wrong only for a block whose variants disagree about whether they animate at all, which costs
+     * that block the frozen texture it already had.
+     */
+    private static boolean couldAnimate(final ClientLevel level, final BlockPos pos,
+        final BlockState state, final FluidState fluidState, final BlockRenderDispatcher dispatcher,
+        final RandomSource random) {
+
+        final List<TextureAtlasSprite> probe = new ArrayList<>(0);
+
+        if (!fluidState.isEmpty()) {
+            final FluidRenderHandler handler =
+                FluidRenderHandlerRegistry.INSTANCE.get(fluidState.getType());
+            if (handler != null) {
+                addAnimated(handler.getFluidSprites(level, pos, fluidState), probe);
+                if (!probe.isEmpty()) {
+                    return true;
+                }
+            }
+        }
+
+        if (state.getRenderShape() == RenderShape.MODEL) {
+            final BlockStateModel model = dispatcher.getBlockModel(state);
+            for (int variant = 0; variant < VARIANT_PROBES; variant++) {
+                random.setSeed(variant * 0x9E3779B97F4A7C15L);
+                addAnimatedParts(model, random, probe);
+                if (!probe.isEmpty()) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static void addAnimatedParts(final BlockStateModel model, final RandomSource random,
+        final List<TextureAtlasSprite> out) {
+        for (final BlockModelPart part : model.collectParts(random)) {
+            addAnimatedQuads(part.getQuads(null), out);
+            for (final Direction dir : Direction.values()) {
+                addAnimatedQuads(part.getQuads(dir), out);
+            }
+        }
+    }
+
+    private static void addAnimatedQuads(final List<BakedQuad> quads,
+        final List<TextureAtlasSprite> out) {
+        for (final BakedQuad quad : quads) {
+            addAnimated(quad.sprite(), out);
+        }
+    }
+
+    private static void addAnimated(final TextureAtlasSprite[] sprites,
+        final List<TextureAtlasSprite> out) {
+        for (final TextureAtlasSprite sprite : sprites) {
+            addAnimated(sprite, out);
+        }
+    }
+
+    private static void addAnimated(final TextureAtlasSprite sprite,
+        final List<TextureAtlasSprite> out) {
+        // Lists, not sets: these hold a couple of entries at most, so a linear scan beats hashing.
+        if (sprite != null && !out.contains(sprite) && SodiumCompat.hasAnimation(sprite)) {
+            out.add(sprite);
+        }
     }
 
     /**

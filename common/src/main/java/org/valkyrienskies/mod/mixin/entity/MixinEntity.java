@@ -5,6 +5,7 @@ import static org.valkyrienskies.mod.common.util.VectorConversionsMCKt.toJOML;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import it.unimi.dsi.fastutil.objects.Object2DoubleMap;
+import java.util.List;
 import java.util.Set;
 import net.minecraft.CrashReport;
 import net.minecraft.CrashReportCategory;
@@ -15,6 +16,7 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.InsideBlockEffectApplier;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
@@ -255,21 +257,34 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
     // exists in 1.21.11 Entity, and the missing target made this whole mixin fail to apply
     // (which silently dropped IEntityDraggingInformationProvider from every entity).
 
+    /**
+     * Run the "standing inside a block" effects for ship blocks too, by walking the entity's bounding box
+     * again in each nearby ship's own space.
+     *
+     * <p>The collector is handed straight through, and that matters: since 1.21.11 a block does not damage
+     * anything itself, it only asks the {@link net.minecraft.world.entity.InsideBlockEffectApplier} for an
+     * effect -- {@code BaseFireBlock.entityInside} is nothing but two {@code apply(FIRE_IGNITE)} calls.
+     * Passing {@code NOOP} here (as this did) therefore made every ship block's inside-effect silently do
+     * nothing: fire and lava aboard a ship could not burn you, powder snow could not freeze you, and water
+     * could not put you out. Vanilla flushes the collector with {@code applyAndClear} immediately after
+     * this method returns, so effects added here land in the same step as the ones it collected itself.
+     */
     @Inject(
         at = @At("TAIL"),
         method = "checkInsideBlocks(Ljava/util/List;Lnet/minecraft/world/entity/InsideBlockEffectApplier$StepBasedCollector;)V"
     )
-    private void afterCheckInside(final CallbackInfo ci) {
+    private void afterCheckInside(final List<?> movements,
+        final InsideBlockEffectApplier.StepBasedCollector collector, final CallbackInfo ci) {
         final AABBd boundingBox = toJOML(getBoundingBox());
         final AABBd temp = new AABBd();
         for (final Ship ship : VSGameUtilsKt.getShipsIntersecting(level, boundingBox)) {
             final AABBd inShipBB = boundingBox.transform(ship.getShipTransform().getWorldToShipMatrix(), temp);
-            originalCheckInside(inShipBB);
+            originalCheckInside(inShipBB, collector);
         }
     }
 
     @Unique
-    private void originalCheckInside(final AABBd aABB) {
+    private void originalCheckInside(final AABBd aABB, final InsideBlockEffectApplier applier) {
         final Entity self = Entity.class.cast(this);
         final BlockPos blockPos = BlockPos.containing(aABB.minX + 0.001, aABB.minY + 0.001, aABB.minZ + 0.001);
         final BlockPos blockPos2 = BlockPos.containing(aABB.maxX - 0.001, aABB.maxY - 0.001, aABB.maxZ - 0.001);
@@ -282,8 +297,7 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
                         final BlockState blockState = this.level.getBlockState(mutableBlockPos);
 
                         try {
-                            blockState.entityInside(this.level, mutableBlockPos, self,
-                                net.minecraft.world.entity.InsideBlockEffectApplier.NOOP, false);
+                            blockState.entityInside(this.level, mutableBlockPos, self, applier, false);
                             this.onInsideBlock(blockState);
                         } catch (final Throwable var12) {
                             final CrashReport crashReport =
