@@ -407,6 +407,50 @@ object RecipeOverrides {
             )
         }
 
+        // Steel = 8:  C R C   R I I   C I I
+        // (I=iron ingot in a 2x2 at the bottom right, R=raw iron, C=coal or charcoal in the free corners).
+        // Steel is smelted rather than mined, so its recipe is the only one in the family that is not a
+        // symmetrical arrangement of one metal: iron and raw iron cooked with carbon.
+        val carbon = anyOf("minecraft:coal", "minecraft:charcoal")
+        root.add(
+            "vs_eureka:steel_cannonball",
+            shaped(
+                listOf(
+                    carbon, s("minecraft:raw_iron"), carbon,
+                    s("minecraft:raw_iron"), s("minecraft:iron_ingot"), s("minecraft:iron_ingot"),
+                    carbon, s("minecraft:iron_ingot"), s("minecraft:iron_ingot")
+                ),
+                "vs_eureka:steel_cannonball", 8, "cannonballs"
+            )
+        )
+
+        // Explosive rounds = 4:  M P P   P B B   P B B
+        // (B=four of that cannonball in a 2x2 at the bottom right, mirroring the steel layout, M=that
+        // metal's raw form in the upper-left, P=gunpowder filling the rest). Four in, four out: the charge
+        // is packed into the shells you already have rather than casting new ones.
+        for (ball in listOf("copper", "iron", "steel", "gold", "netherite")) {
+            val raw = when (ball) {
+                "copper" -> "minecraft:raw_copper"
+                // Steel is an iron alloy and has no raw form of its own.
+                "iron", "steel" -> "minecraft:raw_iron"
+                "gold" -> "minecraft:raw_gold"
+                else -> "minecraft:ancient_debris"
+            }
+            val shot = s("vs_eureka:${ball}_cannonball")
+            val powder = s("minecraft:gunpowder")
+            root.add(
+                "vs_eureka:explosive_${ball}_cannonball",
+                shaped(
+                    listOf(
+                        s(raw), powder, powder,
+                        powder, shot, shot,
+                        powder, shot, shot
+                    ),
+                    "vs_eureka:explosive_${ball}_cannonball", 4, "cannonballs"
+                )
+            )
+        }
+
         return root
     }
 }
