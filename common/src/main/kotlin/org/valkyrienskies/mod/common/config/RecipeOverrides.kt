@@ -424,31 +424,39 @@ object RecipeOverrides {
             )
         )
 
-        // Explosive rounds = 4:  M P P   P B B   P B B
+        // Charged rounds = 4:  M P P   P B B   P B B
         // (B=four of that cannonball in a 2x2 at the bottom right, mirroring the steel layout, M=that
-        // metal's raw form in the upper-left, P=gunpowder filling the rest). Four in, four out: the charge
-        // is packed into the shells you already have rather than casting new ones.
-        for (ball in listOf("copper", "iron", "steel", "gold", "netherite")) {
-            val raw = when (ball) {
-                "copper" -> "minecraft:raw_copper"
-                // Steel is an iron alloy and has no raw form of its own.
-                "iron", "steel" -> "minecraft:raw_iron"
-                "gold" -> "minecraft:raw_gold"
-                else -> "minecraft:ancient_debris"
-            }
-            val shot = s("vs_eureka:${ball}_cannonball")
-            val powder = s("minecraft:gunpowder")
-            root.add(
-                "vs_eureka:explosive_${ball}_cannonball",
-                shaped(
-                    listOf(
-                        s(raw), powder, powder,
-                        powder, shot, shot,
-                        powder, shot, shot
-                    ),
-                    "vs_eureka:explosive_${ball}_cannonball", 4, "cannonballs"
+        // metal's raw form in the upper-left, P=the charge filling the rest). Four in, four out: a charge is
+        // packed into shells you already have rather than cast into new ones.
+        //
+        // Explosive and incendiary share the shape and differ only in the powder, which is the whole point --
+        // the recipe reads as "same round, different filling", exactly as the two items do.
+        for ((prefix, powderId) in listOf(
+            "explosive" to "minecraft:gunpowder",
+            "incendiary" to "minecraft:blaze_powder"
+        )) {
+            for (ball in listOf("copper", "iron", "steel", "gold", "netherite")) {
+                val raw = when (ball) {
+                    "copper" -> "minecraft:raw_copper"
+                    // Steel is an iron alloy and has no raw form of its own.
+                    "iron", "steel" -> "minecraft:raw_iron"
+                    "gold" -> "minecraft:raw_gold"
+                    else -> "minecraft:ancient_debris"
+                }
+                val shot = s("vs_eureka:${ball}_cannonball")
+                val powder = s(powderId)
+                root.add(
+                    "vs_eureka:${prefix}_${ball}_cannonball",
+                    shaped(
+                        listOf(
+                            s(raw), powder, powder,
+                            powder, shot, shot,
+                            powder, shot, shot
+                        ),
+                        "vs_eureka:${prefix}_${ball}_cannonball", 4, "cannonballs"
+                    )
                 )
-            )
+            }
         }
 
         return root
