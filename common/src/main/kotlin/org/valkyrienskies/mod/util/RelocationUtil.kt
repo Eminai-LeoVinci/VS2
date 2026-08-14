@@ -56,12 +56,39 @@ fun relocateBlock(
         tag
     }
 
+    // Kept unrotated for the POI bookkeeping below, which has to describe what was actually at `from`.
+    val originalState = state
+    val previousToState = toChunk.getBlockState(to)
+
     state = state.rotate(rotation)
 
     // 1.21.11: setBlockState's last arg is now Block.UpdateFlags Int, not Boolean.
     // We do the neighbour/light updates ourselves below via updateBlock(), so pass 0 here.
     fromChunk.setBlockState(from, AIR, 0)
     toChunk.setBlockState(to, state, 0)
+
+    // Keep the point-of-interest index in step with the blocks we just moved.
+    //
+    // Vanilla does this from Level.setBlock, and these are CHUNK-level writes that deliberately bypass it --
+    // so without this call the POI manager is never told a workstation moved. Both halves go wrong, and both
+    // were visible in game:
+    //
+    //  - Assembling left a STALE record behind at the old world position. Villagers went on treating it as a
+    //    live job site: they would walk right past an adjacent bench to claim a helm that no longer existed,
+    //    stand at nothing, and never be assigned a profession -- and any villager already employed there kept
+    //    the job forever, because ValidateNearbyPoi asks the POI manager rather than the world, so the memory
+    //    was never invalidated and LoseJobOnSiteLoss never fired. That is the villager still wearing a
+    //    Crewman's coat after its wheel was broken.
+    //  - Disassembling registered NO record at the new world position, so a helm that had been part of a ship
+    //    was invisible to every villager. Placing a second helm beside it worked instantly, which is the
+    //    clearest possible statement that the block was fine and the index was not.
+    //
+    // Applies to every POI block a ship carries -- beds, bells, lodestones and every workstation -- not just
+    // ours. isClientSide guards it because the client's Level implementation of this is a no-op anyway.
+    if (!level.isClientSide) {
+        level.updatePOIOnBlockStateChange(from, originalState, AIR)
+        level.updatePOIOnBlockStateChange(to, previousToState, state)
+    }
 
     if (doUpdate) {
         updateBlock(level, from, to, state)
