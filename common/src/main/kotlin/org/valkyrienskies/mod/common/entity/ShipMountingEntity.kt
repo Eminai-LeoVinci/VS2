@@ -26,6 +26,7 @@ import org.valkyrienskies.core.api.ships.LoadedShip
 import org.valkyrienskies.core.api.ships.Ship
 import org.valkyrienskies.core.api.ships.setAttachment
 import org.valkyrienskies.mod.api.SeatedControllingPlayer
+import org.valkyrienskies.mod.client.ShipGamepad
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod
 import org.valkyrienskies.mod.common.config.VSKeyBindings
 import org.valkyrienskies.mod.common.getShipManagingPos
@@ -272,8 +273,11 @@ open class ShipMountingEntity(type: EntityType<ShipMountingEntity>, level: Level
         // 2.4.80: "up" intent now also accepts the dedicated shipUp keybind so
         // controller users can map a controller button to ascend without
         // overloading vanilla jump. Keyboard players keep SPACE (jump) as before.
-        val up = jumping || VSKeyBindings.shipUp.get().isDown
-        val down = VSKeyBindings.shipDown.get().isDown
+        // The D-pad reads come straight off the hardware (ShipGamepad), so a pad
+        // flies the ship with no keybind setup at all: up is climb, down is dive,
+        // in every perspective, whenever this seat is the one being ridden.
+        val up = jumping || VSKeyBindings.shipUp.get().isDown || ShipGamepad.dpadUp()
+        val down = VSKeyBindings.shipDown.get().isDown || ShipGamepad.dpadDown()
         val cruise = VSKeyBindings.shipCruise.get().isDown
 
         // Quantize to -1/0/+1 to preserve the binary thrust step the physics is tuned
