@@ -446,7 +446,9 @@ object RecipeOverrides {
                     // Steel is an iron alloy and has no raw form of its own.
                     "iron", "steel" -> "minecraft:raw_iron"
                     "gold" -> "minecraft:raw_gold"
-                    else -> "minecraft:ancient_debris"
+                    // Scrap, not debris: the charge is packed against refined metal, and debris is the ORE --
+                    // asking for it here read as a mistake to anyone who knows the smelting chain.
+                    else -> "minecraft:netherite_scrap"
                 }
                 val shot = s("vs_eureka:${ball}_cannonball")
                 val powder = s(powderId)
