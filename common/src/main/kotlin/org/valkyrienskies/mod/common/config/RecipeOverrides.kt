@@ -434,11 +434,13 @@ object RecipeOverrides {
         // metal's raw form in the upper-left, P=the charge filling the rest). Four in, four out: a charge is
         // packed into shells you already have rather than cast into new ones.
         //
-        // Explosive and incendiary share the shape and differ only in the powder, which is the whole point --
-        // the recipe reads as "same round, different filling", exactly as the two items do.
+        // The charged rounds share the shape and differ only in the filling, which is the whole point --
+        // the recipe reads as "same round, different filling", exactly as the items do. Armor-piercing takes
+        // diamonds where the others take powder: a coating rather than a charge, and priced like one.
         for ((prefix, powderId) in listOf(
             "explosive" to "minecraft:gunpowder",
-            "incendiary" to "minecraft:blaze_powder"
+            "incendiary" to "minecraft:blaze_powder",
+            "armor_piercing" to "minecraft:diamond"
         )) {
             for (ball in listOf("copper", "iron", "steel", "gold", "netherite")) {
                 val raw = when (ball) {
