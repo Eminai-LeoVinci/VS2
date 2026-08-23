@@ -6,6 +6,7 @@ import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.Packet
 import net.minecraft.network.protocol.game.ClientGamePacketListener
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket
+import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket
 import net.minecraft.network.syncher.EntityDataAccessor
 import net.minecraft.network.syncher.EntityDataSerializers
 import net.minecraft.network.syncher.SynchedEntityData
@@ -186,6 +187,40 @@ open class ShipMountingEntity(type: EntityType<ShipMountingEntity>, level: Level
     // upstream 1.21.11 behaviour that the 1.21.1 port was missing.
     override fun getPassengerRidingPosition(entity: Entity): Vec3 {
         return position()
+    }
+
+    /**
+     * Tell everyone watching that this seat's riders changed.
+     *
+     * A helm seat is parked in the SHIPYARD and never moves, and shipyard chunks are deliberately capped at
+     * BLOCK_TICKING (see MixinChunkHolder). `ChunkMap.tick()` only reaches `serverEntity.sendChanges()` when
+     * the entity changed section or its chunk is in entity-ticking range -- and for a stationary shipyard seat
+     * both are false forever. `sendChanges` is the only thing that broadcasts [ClientboundSetPassengersPacket]
+     * after spawn, and the helm spawns the seat BEFORE mounting the rider, so the one pairing burst everyone
+     * nearby receives says the seat is empty.
+     *
+     * The result is an observer who is never told that anyone sat down. With no vehicle on their client the
+     * ship-mount render path cannot engage, so they fall back to the drag path and watch the helmsman drift
+     * off the deck of the ship that is, in fact, still carrying him -- snapping back to the wheel the instant
+     * he stands up.
+     *
+     * So the seat says it here, where the passenger list actually changes, which covers every seat and every
+     * mount path. World-space seats already worked, because their tracker moves and `sendChanges` does run
+     * for them; they now get one duplicate packet per mount, which the client applies idempotently.
+     */
+    private fun announceRiders() {
+        val lvl = level() as? ServerLevel ?: return
+        lvl.chunkSource.chunkMap.broadcast(this, ClientboundSetPassengersPacket(this))
+    }
+
+    override fun addPassenger(passenger: Entity) {
+        super.addPassenger(passenger)
+        announceRiders()
+    }
+
+    override fun removePassenger(passenger: Entity) {
+        super.removePassenger(passenger)
+        announceRiders()
     }
 
     override fun readAdditionalSaveData(compound: CompoundTag) {}
