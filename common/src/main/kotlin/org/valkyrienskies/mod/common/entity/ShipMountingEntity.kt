@@ -5,6 +5,7 @@ import net.minecraft.network.chat.Component
 import net.minecraft.network.protocol.Packet
 import net.minecraft.network.protocol.game.ClientGamePacketListener
 import net.minecraft.network.protocol.game.ClientboundAddEntityPacket
+import net.minecraft.network.protocol.game.ClientboundSetPassengersPacket
 import net.minecraft.network.syncher.EntityDataAccessor
 import net.minecraft.network.syncher.EntityDataSerializers
 import net.minecraft.network.syncher.SynchedEntityData
@@ -188,6 +189,40 @@ open class ShipMountingEntity(type: EntityType<ShipMountingEntity>, level: Level
     // on client and server (the controller flag is never synced to clients).
     override fun getPassengerRidingPosition(entity: Entity): Vec3 {
         return position()
+    }
+
+    /**
+     * Tell everyone watching that this seat's riders changed.
+     *
+     * A helm seat is parked in the SHIPYARD and never moves, and shipyard chunks are deliberately capped at
+     * BLOCK_TICKING (see MixinChunkHolder). `ChunkMap.tick()` only reaches `serverEntity.sendChanges()` when
+     * the entity changed section, or `needsSync` is set, or its chunk is in entity-ticking range -- and for a
+     * stationary shipyard seat all three are false forever. `sendChanges` is the only thing that broadcasts
+     * [ClientboundSetPassengersPacket] after spawn, and the helm spawns the seat BEFORE mounting the rider,
+     * so the one pairing burst everyone nearby receives says the seat is empty.
+     *
+     * `ServerPlayer.startRiding` hands the packet straight to the rider's own connection. That is the whole
+     * asymmetry: the helmsman's screen is always right, and every other player is never told at all. With no
+     * vehicle on their client the ship-mount render path cannot engage, so the observer falls back to the drag
+     * path and watches the helmsman drift off the deck of the ship that is, in fact, still carrying them.
+     *
+     * So the seat says it here, where the passenger list actually changes. World-space seats (reconnect,
+     * hotkey, gun stations) already worked, because their tracker moves and `sendChanges` does run for them --
+     * this costs them one duplicate packet per mount, which the client applies idempotently.
+     */
+    private fun announceRiders() {
+        val lvl = level() as? ServerLevel ?: return
+        lvl.chunkSource.chunkMap.sendToTrackingPlayers(this, ClientboundSetPassengersPacket(this))
+    }
+
+    override fun addPassenger(passenger: Entity) {
+        super.addPassenger(passenger)
+        announceRiders()
+    }
+
+    override fun removePassenger(passenger: Entity) {
+        super.removePassenger(passenger)
+        announceRiders()
     }
 
     // 1.21.11: these now take ValueInput/ValueOutput instead of CompoundTag. Bodies stay empty —
