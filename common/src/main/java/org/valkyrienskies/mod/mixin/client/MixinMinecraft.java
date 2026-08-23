@@ -167,11 +167,26 @@ public abstract class MixinMinecraft
         shipObjectWorld = null;
     }
 
+    /**
+     * Tear the client ship world down on the way out, whichever door was used.
+     *
+     * <p>This used to hook {@code disconnect(Screen, boolean)}. That overload and
+     * {@code disconnectWithSavingScreen} both reach it -- but {@code disconnectWithProgressScreen}, the
+     * Save-and-Quit-to-Title path, calls the three-arg version directly and skipped it entirely. Leaving a
+     * world that way left the old ship world standing, and the next login threw "shipObjectWorld was not null
+     * when it should be null?" out of {@link #createShipObjectWorldClient()} -- which Voxy escalates into a
+     * hard crash, so rejoining a server meant restarting the whole client.
+     *
+     * <p>The three-arg overload is the single choke point every exit path funnels through. {@code require = 1}
+     * because this config runs {@code defaultRequire = 0}, which is how the miss went unnoticed.
+     */
     @Inject(
-        method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V",
-        at = @At("RETURN")
+        method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;ZZ)V",
+        at = @At("RETURN"),
+        require = 1
     )
-    private void postDisconnect(final Screen screen, final boolean bl, final CallbackInfo ci) {
+    private void postDisconnect(final Screen screen, final boolean bl, final boolean bl2,
+        final CallbackInfo ci) {
         if (shipObjectWorld != null) {
             deleteShipObjectWorldClient();
         }
