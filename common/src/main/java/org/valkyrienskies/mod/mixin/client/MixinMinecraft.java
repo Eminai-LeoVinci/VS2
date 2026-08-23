@@ -3,6 +3,7 @@ package org.valkyrienskies.mod.mixin.client;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.MultiPlayerGameMode;
@@ -160,11 +161,26 @@ public abstract class MixinMinecraft
         shipObjectWorld = null;
     }
 
+    /**
+     * Tear the client ship world down on the way out, whichever door was used.
+     *
+     * <p>This used to hook the no-arg {@code clearLevel()}. That catches leaving a multiplayer server, but
+     * {@code PauseScreen} calls {@code clearLevel(Screen)} directly when quitting a singleplayer or
+     * LAN-hosted world, and {@code DeathScreen} does the same on "Title Screen" -- both walked straight past
+     * it. Leaving that way left the old ship world standing, and the next login threw "shipObjectWorld was
+     * not null when it should be null?" out of {@link #createShipObjectWorldClient()}, which some renderers
+     * escalate into a hard crash: rejoining meant restarting the whole client.
+     *
+     * <p>{@code clearLevel(Screen)} is the one choke point -- the no-arg overload delegates to it.
+     * {@code require = 1} because this config runs {@code defaultRequire = 0}, which is how the miss went
+     * unnoticed.
+     */
     @Inject(
-        method = "clearLevel",
-        at = @At("TAIL")
+        method = "clearLevel(Lnet/minecraft/client/gui/screens/Screen;)V",
+        at = @At("TAIL"),
+        require = 1
     )
-    private void postClearLevel(final CallbackInfo ci) {
+    private void postClearLevel(final Screen screen, final CallbackInfo ci) {
         if (shipObjectWorld != null) {
             deleteShipObjectWorldClient();
         }
