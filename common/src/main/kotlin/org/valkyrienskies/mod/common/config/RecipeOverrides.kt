@@ -80,6 +80,7 @@ object RecipeOverrides {
                 logger.info("Created default recipe config at " + CONFIG_FILE.toAbsolutePath())
             }
             val root = JsonParser.parseString(Files.readString(CONFIG_FILE)).asJsonObject
+            mergeMissingDefaults(root)
             for ((id, specEl) in root.entrySet()) {
                 if (id.startsWith("_")) continue // inline-note key
                 if (specEl.isJsonPrimitive && specEl.asString.equals("remove", ignoreCase = true)) {
@@ -106,6 +107,53 @@ object RecipeOverrides {
         }
         overrideCache = overrides
         removalCache = removals
+    }
+
+    /**
+     * Add any recipe the defaults know about and the file on disk does not, then write it back.
+     *
+     * Without this, [defaultConfig] only ever reaches a player who has never launched the mod before: the
+     * file is written when ABSENT and read otherwise, so every recipe added after a player's first launch
+     * was invisible to them for ever. That is not a hypothetical -- a new block would ship with a recipe
+     * nobody upgrading could craft, and the only fix was "delete your recipe config", which throws away
+     * every tuning decision in it.
+     *
+     * Only ADDS. An entry already in the file is left exactly as the player left it, including a
+     * deliberately retuned one, so this can never quietly undo an edit. The one thing it cannot tell apart
+     * is a recipe the player DELETED to disable it -- that comes back. Setting it to `"remove"` is the
+     * documented way to switch a recipe off, and unlike deletion it survives this merge and every future one.
+     *
+     * `_README` is refreshed rather than merged: it is documentation, not configuration, and a stale copy of
+     * it is worse than none.
+     */
+    private fun mergeMissingDefaults(root: JsonObject) {
+        val defaults = defaultConfig()
+        var added = 0
+        for ((id, spec) in defaults.entrySet()) {
+            if (id == "_README") continue
+            if (root.has(id)) continue
+            root.add(id, spec)
+            added++
+        }
+
+        val readme = defaults.get("_README")
+        val readmeStale = readme != null && root.get("_README") != readme
+        if (added == 0 && !readmeStale) return
+        if (readme != null) root.add("_README", readme)
+
+        try {
+            Files.writeString(CONFIG_FILE, gson.toJson(root))
+            if (added > 0) {
+                logger.info(
+                    "Added " + added + " new default recipe(s) to " + CONFIG_FILE.fileName +
+                        "; existing entries were left untouched. Set one to \"remove\" to disable it."
+                )
+            }
+        } catch (e: Exception) {
+            // The merged recipes are already in `root`, so this run still behaves correctly -- only the
+            // write-back failed, and it will be retried on the next reload.
+            logger.warn("Could not write merged recipe config: " + e.message)
+        }
     }
 
     // ---- friendly 9-slot spec -> standard crafting-recipe JSON ----
@@ -262,7 +310,9 @@ object RecipeOverrides {
             "Eureka Armada recipe overrides (defaults = Armada's own recipes). 9 slots: 1=top-left .. " +
                 "5=centre .. 9=bottom-right. Slot = \"namespace:item\", \"#namespace:tag\", [\"a\",\"b\"] for " +
                 "alternatives, or \"\" for empty. type=shaped|shapeless, plus result + count. Set a recipe to " +
-                "\"remove\" to disable it. Edit then /reload."
+                "\"remove\" to disable it. Edit then /reload. Recipes added by a mod update are appended here " +
+                "automatically; entries already in this file are never rewritten, so use \"remove\" rather " +
+                "than deleting a recipe you want gone -- a deleted one comes back on the next update."
         )
 
         // Ship helm, one per wood:  B F B   F h F   S L S
@@ -319,6 +369,30 @@ object RecipeOverrides {
                     s("minecraft:iron_ingot"), s("minecraft:iron_block"), s("minecraft:iron_ingot")
                 ),
                 "vs_eureka:anchor", 1
+            )
+        )
+
+        // Shipwright's Bench:  G A C   S M T   p p p
+        // (G=grindstone, A=any anvil, C=crafting table, S=stonecutter, M=cartography table,
+        //  T=smithing table, p=any planks)
+        //
+        // Every station in the grid is a station standing on the finished desk, which is what makes a recipe
+        // this expensive read as assembly rather than as a toll. The anvil is the tag, so a chipped or
+        // damaged one is accepted -- refusing a dented anvil for a workbench that already has one dented into
+        // its top would be a strange thing to insist on.
+        //
+        // This is also the switch for the whole feature: set this entry to "remove" and the Shipwright's
+        // Bench becomes uncraftable again, which is the behaviour it shipped with and the one that makes
+        // shipwrights something you can only find rather than make.
+        root.add(
+            "vs_eureka:shipwrights_bench",
+            shaped(
+                listOf(
+                    s("minecraft:grindstone"), s("#minecraft:anvil"), s("minecraft:crafting_table"),
+                    s("minecraft:stonecutter"), s("minecraft:cartography_table"), s("minecraft:smithing_table"),
+                    s("#minecraft:planks"), s("#minecraft:planks"), s("#minecraft:planks")
+                ),
+                "vs_eureka:shipwrights_bench", 1
             )
         )
 
