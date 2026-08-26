@@ -457,7 +457,9 @@ public final class ShipTerrainMeshCache {
             final Frustum shadowFrustum =
                 (ShipTerrainIrisPipeline.shadowReady() && VSGameConfig.CLIENT.getRenderShipShadows())
                     ? ShipTerrainIrisPipeline.shadowFrustum() : null;
-            final double shadowDistCap = VSGameConfig.CLIENT.getShipShadowDistance();
+            // 0.0 = uncapped downstream; the toggle simply forces that regardless of the stored distance.
+            final double shadowDistCap = VSGameConfig.CLIENT.getShipShadowDistanceCap()
+                ? VSGameConfig.CLIENT.getShipShadowDistance() : 0.0;
 
             for (final ClientShip ship : VSGameUtilsKt.getShipObjectWorld(level).getLoadedShips()) {
                 // Skip the whole ship (and all its per-chunk/-section work) when neither the camera nor (for

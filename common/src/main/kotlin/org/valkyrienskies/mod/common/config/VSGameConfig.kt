@@ -86,12 +86,18 @@ object VSGameConfig {
         var renderShipShadows = true
 
         @ConfigEntry(
-            description = "Max distance (blocks, camera to ship center) at which ships still cast Iris shadows. " +
-                "Ships beyond it skip the shadow pass entirely (their sections neither bake for nor draw into " +
-                "the shadow map), trading distant ship shadows for FPS with many ships loaded. " +
-                "0 = unlimited (every ship the sun sees casts). Only applies while ship shadows are on."
+            description = "Cap how far away ships still cast Iris shadows. On = ships whose center is farther " +
+                "than shipShadowDistance skip the shadow pass entirely (their sections neither bake for nor " +
+                "draw into the shadow map), trading distant ship shadows for FPS with many ships loaded. " +
+                "Off = every ship the sun sees casts. Only applies while ship shadows are on."
         )
-        var shipShadowDistance = 0.0
+        var shipShadowDistanceCap = true
+
+        @ConfigEntry(
+            description = "Max distance (blocks, camera to ship center) at which ships still cast Iris shadows " +
+                "while the distance cap is on. Default 128."
+        )
+        var shipShadowDistance = 128.0
 
         @ConfigEntry(
             description = "Max ship terrain sections baked per frame when sections first become visible or after " +
