@@ -219,6 +219,12 @@ public final class ShipTerrainMeshCache {
     // Per-frame bake budget counters (reset each frame): first-time/block-edit bakes and
     // light-only in-place re-bakes are budgeted separately (see the config entries).
     private int lastBaked;
+
+    // Bumped whenever a SHIP section's cached mesh is evicted for a real block change (never for
+    // light-only dirties, and never for world-terrain edits -- those miss the section map). A cheap
+    // "some ship's blocks changed" signal: MixinLevelRenderer's block-entity chunk cache rescans on a
+    // stamp change instead of walking every ship chunk every frame.
+    private static long blockEditStamp;
     private int lightRebaked;
 
     private ShipTerrainMeshCache() {
@@ -1473,7 +1479,13 @@ public final class ShipTerrainMeshCache {
             // no whole-ship blink; only the one changed section's shadow drops, for the existing ~1-frame lag.)
             // Identity match is exact: the queue stores cached.gpuMeshes by reference (see the renderAll enqueue).
             gpuDrawQueue.removeIf(item -> item.meshes() == removed.gpuMeshes);
+            blockEditStamp++;
         }
+    }
+
+    /** See {@link #blockEditStamp} -- changes when any ship section is evicted for a block edit. */
+    public static long blockEditStamp() {
+        return blockEditStamp;
     }
 
     private void evictStale() {

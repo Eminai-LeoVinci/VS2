@@ -112,6 +112,22 @@ public abstract class MixinLevelRenderer {
     @Unique
     private static final long VS_LOD_REOCCLUDE_INTERVAL = 8L;
 
+    // Per-ship set of shipyard chunks that held >=1 block entity at the last scan (packed ChunkPos).
+    // A big hull is hundreds of active chunks and nearly all are pure terrain, yet the walk below ran
+    // a getChunk + map lookup on every one of them every frame (~5% of the render thread in a ten-ship
+    // anchorage). The set only changes on a ship block edit, so it is rebuilt when the mesh cache
+    // reports one (blockEditStamp), when a ship is first seen, and on a periodic backstop -- and it
+    // self-heals by dropping a chunk the moment it turns up empty.
+    @Unique
+    private final it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<it.unimi.dsi.fastutil.longs.LongOpenHashSet>
+        vs$beChunksByShip = new it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap<>();
+    @Unique
+    private long vs$beCacheStamp = Long.MIN_VALUE;
+    @Unique
+    private int vs$beCacheFrames;
+    @Unique
+    private boolean vs$beRescanThisFrame;
+
     @Unique
     private static it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap vs$newVerdictCache() {
         final it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap map =
@@ -376,6 +392,15 @@ public abstract class MixinLevelRenderer {
 
             final CameraRenderState cameraRenderState = levelRenderState.cameraRenderState;
             final Frustum frustum = this.valkyrienskies$mainPassFrustum;
+
+            // Decide once per frame whether the per-ship BE-chunk caches need a rebuild.
+            final long vsBeStamp = ShipTerrainMeshCache.blockEditStamp();
+            vs$beRescanThisFrame = vsBeStamp != vs$beCacheStamp || ++vs$beCacheFrames >= 100;
+            if (vs$beRescanThisFrame) {
+                vs$beCacheStamp = vsBeStamp;
+                vs$beCacheFrames = 0;
+                vs$beChunksByShip.clear(); // also drops ships that unloaded
+            }
             for (final ClientShip ship : VSGameUtilsKt.getShipObjectWorld(clientLevel).getLoadedShips()) {
                 if (vsLodOccluded.contains(ship.getId())) {
                     continue; // fully behind LOD terrain
@@ -391,11 +416,30 @@ public abstract class MixinLevelRenderer {
                 }
                 final ShipTransform renderTransform = ship.getRenderTransform();
                 final Matrix4dc shipToWorld = renderTransform.getShipToWorld();
-                ship.getActiveChunksSet().forEach((chunkX, chunkZ) -> {
-                    final LevelChunk chunk = clientLevel.getChunk(chunkX, chunkZ);
+                // Walk only the chunks known to hold block entities (see vs$beChunksByShip).
+                it.unimi.dsi.fastutil.longs.LongOpenHashSet beChunks = vs$beChunksByShip.get(ship.getId());
+                if (vs$beRescanThisFrame || beChunks == null) {
+                    final it.unimi.dsi.fastutil.longs.LongOpenHashSet fresh =
+                        new it.unimi.dsi.fastutil.longs.LongOpenHashSet();
+                    ship.getActiveChunksSet().forEach((chunkX, chunkZ) -> {
+                        final LevelChunk scanChunk = clientLevel.getChunk(chunkX, chunkZ);
+                        if (!scanChunk.getBlockEntities().isEmpty()) {
+                            fresh.add(net.minecraft.world.level.ChunkPos.asLong(chunkX, chunkZ));
+                        }
+                    });
+                    vs$beChunksByShip.put(ship.getId(), fresh);
+                    beChunks = fresh;
+                }
+                final var beChunkIter = beChunks.iterator();
+                while (beChunkIter.hasNext()) {
+                    final long packedChunk = beChunkIter.nextLong();
+                    final LevelChunk chunk = clientLevel.getChunk(
+                        net.minecraft.world.level.ChunkPos.getX(packedChunk),
+                        net.minecraft.world.level.ChunkPos.getZ(packedChunk));
                     final java.util.Map<BlockPos, BlockEntity> chunkBlockEntities = chunk.getBlockEntities();
                     if (chunkBlockEntities.isEmpty()) {
-                        return; // most shipyard chunks hold no block entities at all
+                        beChunkIter.remove(); // last block entity gone; forget the chunk
+                        continue;
                     }
                     for (final BlockEntity blockEntity : chunkBlockEntities.values()) {
                         final BlockPos bePos = blockEntity.getBlockPos();
@@ -408,7 +452,7 @@ public abstract class MixinLevelRenderer {
                         valkyrienskies$submitShipBlockEntity(blockEntity, renderTransform, poseStack,
                             submitNodeStorage, cameraRenderState);
                     }
-                });
+                }
             }
 
             // Ship TERRAIN blocks. Two paths:
