@@ -98,8 +98,9 @@ import org.valkyrienskies.mod.mixin.accessors.client.render.RenderTypeAccessor;
  * gbuffer terrain program (geometry repacked into Iris's TERRAIN vertex format and drawn via
  * {@link ShipTerrainIrisPipeline}'s assigned pipelines), which eliminates the per-frame CPU re-emit that
  * otherwise costs ~7 ms/frame with a hull in view; without shaders it draws through the vanilla
- * moving-block pipeline. The flush is deferred to renderAllFeatures TAIL (MixinFeatureRenderDispatcher)
- * so the draw lands after the camera/render-target are set, not at submit time. Translucent (glass,
+ * moving-block pipeline. The flush runs from MixinFeatureRenderDispatcher: at renderAllFeatures HEAD
+ * with no shaderpack (before the shared-buffer flush draws ship translucent mid-features), at TAIL under
+ * a shaderpack (after Iris binds its gbuffer target). Translucent (glass,
  * water) always uses the immediate re-emit path, since it needs vanilla's per-frame back-to-front sort
  * to blend correctly.
  * <p>
@@ -151,8 +152,8 @@ public final class ShipTerrainMeshCache {
     //     so the hull is shaded exactly like surrounding chunk terrain. This is the large FPS win with a
     //     ship in view (it eliminates the ~7ms/frame CPU re-emit). See frameIrisGpu.
     //   * Without a shaderpack it draws through the vanilla moving-block pipeline.
-    //   * The flush is deferred to renderAllFeatures TAIL (MixinFeatureRenderDispatcher) so the draw
-    //     lands after the camera/render-target are set, not at submit time.
+    //   * The flush runs from MixinFeatureRenderDispatcher: renderAllFeatures HEAD with no shaderpack
+    //     (the hull must precede the mid-features draw of ship translucent), TAIL under Iris.
     // Translucent geometry (glass/water) always stays on the immediate re-emit path -- it needs vanilla's
     // per-frame back-to-front sort to blend correctly.
 
@@ -416,14 +417,14 @@ public final class ShipTerrainMeshCache {
             // ShipTerrainIrisPipeline (sections are repacked into Iris's TERRAIN vertex format); without
             // shaders they draw through the vanilla moving-block pipeline. frameIrisGpu selects the former.
             frameIrisGpu = gpuActive && shadersOn && ShipTerrainIrisPipeline.ready();
-            // Persistent-GPU-buffer terrain is a SHADERS-ON-only path. With no shaderpack active the
-            // hand-rolled flushGpuDraws RenderPass draws ship solid/cutout into MAIN_TARGET outside
-            // vanilla's pass ordering, corrupting the subsequent vanilla translucent/cutout passes ->
-            // glass + redstone render an xray hole. Iris masks it by re-establishing target+depth state
-            // each gbuffer pass, which is exactly why it only appears shaders-off. So shaders-off falls
-            // back to the immediate re-emit path (what the 1.21.1 backport does, confirmed clean); the
-            // shaders-on GPU fast path is unchanged.
-            frameGpuEffective = frameIrisGpu;
+            // The GPU path runs in BOTH modes; only the flush POINT differs (see MixinFeatureRenderDispatcher):
+            // shaders-off draws at renderAllFeatures HEAD, under a shaderpack at TAIL where Iris's gbuffer
+            // target is bound. The old shaders-off xray (hull invisible behind ship water/glass/redstone) was
+            // pass ORDERING, not GL state: the moving-block types are not fixed buffers, so ship translucent is
+            // actually drawn by the shared-buffer type switch INSIDE renderAllFeatures -- a TAIL-drawn hull
+            // landed after it and lost the depth test everywhere a translucent surface covered it. Drawing the
+            // hull at HEAD restores the order the immediate path always had (2026-08-26).
+            frameGpuEffective = frameIrisGpu || (gpuActive && !shadersOn);
             // Whether to bake shaderpack block ids into mc_Entity (emissive/material) -- Iris path + toggle.
             frameBlockIds = frameIrisGpu && VSGameConfig.CLIENT.getRenderShipBlockIds();
             // Re-bake when the bake mode flips. frameGpuEffective catches GPU <-> immediate; frameIrisGpu
@@ -630,11 +631,11 @@ public final class ShipTerrainMeshCache {
             }
 
             // The GPU draw is intentionally NOT flushed here. submitBlockEntities runs before Iris has
-            // bound its gbuffer target, so a draw at this point lands on the wrong framebuffer and gets
-            // composited away -- the ship only renders here when no shaderpack is active. The queue is
-            // instead flushed from MixinFeatureRenderDispatcher at renderAllFeatures TAIL: the same
-            // point where vanilla flushes this frame's immediate ship terrain (solidMovingBlock), where
-            // Iris's target override IS live. flushDeferredGpuDraws() consumes + clears the queue there.
+            // bound its gbuffer target, so a draw at this point lands on the wrong framebuffer under a
+            // shaderpack. The queue is instead flushed from MixinFeatureRenderDispatcher: at
+            // renderAllFeatures HEAD with no shaderpack (flushDeferredGpuDrawsEarly -- the hull must land
+            // before the shared-buffer type switch draws ship translucent mid-features), at TAIL under
+            // Iris, where its target override IS live.
             // (The per-section transforms are already baked into gpuDrawQueue above, so deferring only
             // the draw is correct -- the camera model-view doesn't change between here and that point.)
 
@@ -650,10 +651,30 @@ public final class ShipTerrainMeshCache {
     }
 
     /**
+     * Early flush for the NO-shaderpack GPU path, from renderAllFeatures HEAD. Ordering is the whole
+     * point: renderAllFeatures draws this frame's recorded features and flushes the immediate
+     * moving-block buffers -- including ship translucent (water, stained glass), which BLENDS against
+     * whatever the framebuffer holds and WRITES DEPTH. The TAIL flush draws ship solid/cutout AFTER
+     * that, so translucent ship geometry blends against the WORLD (the hull is not there yet) and its
+     * depth then rejects every hull fragment behind it: the hull xrays wherever water/glass touches it,
+     * keeping the world pixels forever. Drawing at HEAD puts hull solid/cutout in the framebuffer
+     * before anything blends or depth-tests against it; solid-vs-solid needs no ordering, so being
+     * before the world's remaining passes is harmless.
+     * <p>Under a shaderpack this must NOT run -- Iris binds its gbuffer target between HEAD and the
+     * feature draws, so a HEAD draw lands on the wrong framebuffer and is composited away (the original
+     * reason the flush was deferred to TAIL at all). The Iris path keeps the TAIL flush unchanged.
+     */
+    public void flushDeferredGpuDrawsEarly() {
+        if (frameIrisGpu || !frameGpuEffective) {
+            return; // Iris path flushes at TAIL; immediate mode has nothing queued.
+        }
+        flushDeferredGpuDraws();
+    }
+
+    /**
      * Flush this frame's queued ship-terrain GPU draws. Called from MixinFeatureRenderDispatcher at
-     * {@code renderAllFeatures} TAIL -- the point where vanilla flushes the immediate ship terrain and
-     * Iris has its gbuffer target bound. Drawing earlier (at submitBlockEntities time) lands on the wrong
-     * target under shaders. The hook fires in BOTH the main gbuffer pass and Iris's shadow pass; per-pass
+     * {@code renderAllFeatures} TAIL (and, with no shaderpack, from {@link #flushDeferredGpuDrawsEarly}
+     * at HEAD). Drawing earlier (at submitBlockEntities time) lands on the wrong target under shaders. The hook fires in BOTH the main gbuffer pass and Iris's shadow pass; per-pass
      * flags draw the queue at most once per pass, and the queue is retained until the next renderAll so both
      * passes can use it. In the shadow pass the queue is only drawn when Ship Shadows is enabled + registered.
      */
