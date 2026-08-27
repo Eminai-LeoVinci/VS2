@@ -19,6 +19,7 @@
   "client": [
     "compat.connectiblechains.client.MixinChainKnotEntityRenderer",
     "compat.emf.MixinEMFAnimationEntityContext",
+    "compat.emf.MixinEMFArmsAtHelm",
     "feature.command_suggestion_merge.MixinClientPacketListener",
     "feature.duplicate_keybindings.KeyMappingAccessor",
     "feature.duplicate_keybindings.MixinKeyMapping",

@@ -156,6 +156,7 @@
     "world.level.lighting.MixinThreadedLevelLightEngine"
   ],
   "client": [
+    "accessors.client.model.ModelPartAccessor",
     "accessors.client.multiplayer.ClientLevelAccessor",
     "accessors.client.render.LevelRendererAccessor",
     "accessors.client.render.OverlayVertexConsumerAccessor",
@@ -189,6 +190,7 @@
     "feature.world_weather.MixinLevelRenderer",
     "feature.seamless_copy.MixinClientPacketListener",
     "feature.ship_debug_overlay.MixinDebugScreenOverlay",
+    "feature.ship_mount_pose.MixinLivingEntityRendererStandAtMount",
     "feature.shipyard_entities.MixinClientLevel",
     "feature.shipyard_entities.MixinEntityRenderDispatcher",
     "feature.shipyard_entities.MixinEntityRenderer",
