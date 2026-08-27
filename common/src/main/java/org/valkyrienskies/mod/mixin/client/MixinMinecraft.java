@@ -189,9 +189,23 @@ public abstract class MixinMinecraft
         shipObjectWorld = null;
     }
 
+    /**
+     * Tear the client ship world down on the way out, whichever door was used.
+     *
+     * <p>On 1.21.1 the two-arg overload IS the single choke point: {@code disconnect()} (Save and Quit,
+     * via a ProgressScreen) and {@code disconnect(Screen)} both delegate straight into it -- verified in
+     * bytecode. (1.21.11 grew a three-arg overload that Save-and-Quit called directly, walking past this
+     * hook; the fix there retargets, and does NOT apply here.) A missed door leaves the old ship world
+     * standing and the next login throws "shipObjectWorld was not null when it should be null?", which
+     * Voxy escalates into a hard crash.
+     *
+     * <p>{@code require = 1} because this config runs {@code defaultRequire = 0}: if vanilla ever moves
+     * the choke point, this must fail loudly at load rather than quietly never run.
+     */
     @Inject(
         method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V",
-        at = @At("RETURN")
+        at = @At("RETURN"),
+        require = 1
     )
     private void postDisconnect(final Screen screen, final boolean bl, final CallbackInfo ci) {
         if (shipObjectWorld != null) {
