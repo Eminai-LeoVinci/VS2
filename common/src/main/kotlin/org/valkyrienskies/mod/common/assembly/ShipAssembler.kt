@@ -718,12 +718,25 @@ object ShipAssembler {
         }
         if (deleteBlocks) {
             val aabb = ship.shipAABB ?: return 0
+            // The same flags the bulk removal in assembleToShip uses, and for the same reasons. Flag 2 alone
+            // (what this used, borrowed from /fill) leaves neighbour shape updates on, so taking a hull apart
+            // block by block knocks every ladder, door, lantern and torch off whatever it was attached to on
+            // the way past -- and each one drops as an item. For a ship being deleted because its contents
+            // were saved somewhere first, that is a duplication bug: the fixtures come back with the ship AND
+            // litter the sea where it used to be.
+            val flags = Block.UPDATE_CLIENTS or Block.UPDATE_KNOWN_SHAPE or
+                Block.UPDATE_SUPPRESS_DROPS or Block.UPDATE_MOVE_BY_PISTON
+            val cursor = BlockPos.MutableBlockPos()
             aabb.forEach { x, y, z ->
-                if (dropBlocks)
-                    level.destroyBlock(BlockPos(x, y, z), true)
-                else
-                    // Not sure if 2 is what we want, but it's what /fill uses
-                    level.setBlock(BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 2)
+                cursor.set(x, y, z)
+                if (dropBlocks) {
+                    level.destroyBlock(cursor, true)
+                } else {
+                    // Empty containers before the block goes. SUPPRESS_DROPS stops the BLOCK dropping itself;
+                    // what is inside it is a separate question, and one a chest answers by spilling.
+                    (level.getBlockEntity(cursor) as? Clearable)?.clearContent()
+                    level.setBlock(cursor.immutable(), Blocks.AIR.defaultBlockState(), flags)
+                }
             }
         }
 
