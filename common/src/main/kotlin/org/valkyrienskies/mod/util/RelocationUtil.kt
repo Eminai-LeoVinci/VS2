@@ -2,6 +2,7 @@ package org.valkyrienskies.mod.util
 
 import net.minecraft.core.BlockPos
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.Clearable
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Block
@@ -13,6 +14,7 @@ import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.chunk.LevelChunk
 import org.valkyrienskies.core.api.ships.ServerShip
+import org.valkyrienskies.mod.compat.voxy.VoxyLodRefresh
 
 val AIR = Blocks.AIR.defaultBlockState()
 
@@ -32,6 +34,15 @@ fun relocateBlock(
 ) {
     var state = fromChunk.getBlockState(from)
     val entity = fromChunk.getBlockEntity(from)
+
+    // Voxy voxelises a chunk once, when it is ingested, and never revisits it. Eureka takes a ship apart
+    // one relocation at a time, and it does so wherever she happened to die -- routinely inside the
+    // server's simulation distance but well outside the client's render distance, so the client never
+    // reloads those chunks and the LOD never learns the hull is there. The ship simply vanishes at range.
+    // Both ends are noted; whichever one is the shipyard is filtered out when the batch is flushed.
+    (fromChunk.level as? ServerLevel)?.let { VoxyLodRefresh.mark(it, fromChunk.pos.x, fromChunk.pos.z) }
+    (toChunk.level as? ServerLevel)?.let { VoxyLodRefresh.mark(it, toChunk.pos.x, toChunk.pos.z) }
+
 	val level = toChunk.level
 	
     val tag = entity?.let {

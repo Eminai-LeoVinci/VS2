@@ -45,6 +45,7 @@ import org.valkyrienskies.mod.common.util.toJOML
 import org.valkyrienskies.mod.common.util.toJOMLD
 import org.valkyrienskies.mod.common.vsCore
 import org.valkyrienskies.mod.common.yRange
+import org.valkyrienskies.mod.compat.voxy.VoxyLodRefresh
 import org.valkyrienskies.mod.util.AIR
 import org.valkyrienskies.mod.util.StructureTemplateFillFromVoxelSet
 import org.valkyrienskies.mod.util.logger
@@ -344,6 +345,14 @@ object ShipAssembler {
                 }
             }
         }
+
+        // Voxy only rebuilds a chunk's LOD when that chunk is ingested, and assembly empties world
+        // chunks that a distant client will never reload -- so the hull it just lost goes on standing
+        // in the LOD next to the real ship, and only clears if someone flies out and reloads it. These
+        // are the same columns the chunk-update packets above already cover: source and destination,
+        // with the shipyard end filtered out when the batch is flushed, so one call is right whichever
+        // direction the blocks moved.
+        chunkPoses.forEach { VoxyLodRefresh.mark(level, it) }
 
         return MoveContext(true, fromCenter, centerOfShip)
     }
