@@ -17,9 +17,12 @@ import net.minecraft.server.level.ServerPlayerGameMode;
 import net.minecraft.server.network.CommonListenerCookie;
 import net.minecraft.server.network.ServerCommonPacketListenerImpl;
 import net.minecraft.server.network.ServerGamePacketListenerImpl;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.RelativeMovement;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3d;
+import org.joml.primitives.AABBd;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -191,6 +194,40 @@ public abstract class MixinServerGamePacketListenerImpl extends ServerCommonPack
                 duck.vs_setQueuedPositionUpdate(null);
             }
         }
+    }
+
+
+    /**
+     * A shipyard entity (item frame, painting, armor stand, minecart, ...) physically lives in its
+     * ship's shipyard, millions of blocks from where the ship visually appears. handleInteract
+     * gates every attack and use-on-entity packet behind a reach check against
+     * entity.getBoundingBox() -- the raw shipyard-space box, always hopelessly out of range -- so
+     * the interaction is silently dropped and the entity cannot be broken, hit, or have an item
+     * placed in it.
+     *
+     * <p>Transform that box into world space, where the entity visually sits on the ship right next
+     * to the player, so the vanilla reach check passes. Entities that are not on a ship resolve no
+     * ship and keep their box unchanged. Mirrors VS2's Forge-only isCloseEnough overwrite, and
+     * pairs with MixinPlayer's client-side entity reach check.
+     */
+    @WrapOperation(
+        method = "handleInteract",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/Entity;getBoundingBox()Lnet/minecraft/world/phys/AABB;"
+        ),
+        require = 1
+    )
+    private AABB valkyrienskies$worldSpaceInteractBox(final Entity entity, final Operation<AABB> original) {
+        final AABB box = original.call(entity);
+        final ServerShip ship =
+            VSGameUtilsKt.getShipManagingPos((ServerLevel) player.level(), entity.blockPosition());
+        if (ship == null) {
+            return box;
+        }
+        final AABBd worldBox = VectorConversionsMCKt.toJOML(box);
+        worldBox.transform(ship.getShipToWorld());
+        return VectorConversionsMCKt.toMinecraft(worldBox);
     }
 
 }
