@@ -14,7 +14,7 @@ import org.valkyrienskies.mod.common.config.RecipeOverrides;
 
 /**
  * Config-driven crafting recipe overrides. At recipe (re)load, swaps the datapack-scanned
- * id->JSON map for one in which any recipe id listed in {@code config/vs_eureka_recipes.json}
+ * id->JSON map for one in which any recipe id listed in {@code config/vs_eureka_armada_recipes.json}
  * is replaced/added (or removed). Unlike the 1.21.11 branch (where apply() receives an
  * already-parsed RecipeMap and the mixin must build RecipeHolders itself), 1.21.1's apply()
  * receives the raw JSON map, so the swap happens BEFORE vanilla parses it — tags,
