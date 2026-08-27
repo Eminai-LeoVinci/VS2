@@ -6,6 +6,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Camera;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.core.Position;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.GameRenderer;
@@ -364,4 +365,39 @@ public abstract class MixinGameRenderer {
 
         return maxDistance;
     }
+
+    /**
+     * Let a hit on a ship survive the reach filter that vanilla applies at the very end of picking.
+     *
+     * <p>{@code filterHitResult} range-checks the hit with {@link net.minecraft.world.phys.Vec3#closerThan},
+     * NOT with {@code distanceToSqr} -- so the ship-aware wrap on that method never covered it. A shipyard
+     * entity's EntityHitResult carries a ship-space location millions of blocks out (raytraceEntities does
+     * not transform it back), so the check fails and vanilla REPLACES the hit with
+     * {@code BlockHitResult.miss}. That is the whole bug behind "item frames on a ship cannot be targeted,
+     * and the wall behind them stops highlighting too": the entity was found correctly and passed its own
+     * distance test, then this filter quietly turned the result into a miss.
+     *
+     * <p>Only ever widens the check: the vanilla answer is asked first, and the ship-aware distance is a
+     * fallback for the case it gets wrong. {@code require = 1} because this config runs
+     * {@code defaultRequire = 0}, and a hook that silently stops matching here is invisible until someone
+     * notices they cannot click a painting.
+     */
+    @WrapOperation(
+        method = "filterHitResult(Lnet/minecraft/world/phys/HitResult;Lnet/minecraft/world/phys/Vec3;D)Lnet/minecraft/world/phys/HitResult;",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/world/phys/Vec3;closerThan(Lnet/minecraft/core/Position;D)Z"
+        ),
+        require = 1
+    )
+    private static boolean valkyrienskies$shipAwareHitResultRange(final Vec3 instance, final Position other,
+        final double range, final Operation<Boolean> original) {
+        if (original.call(instance, other, range)) {
+            return true;
+        }
+        return VSGameUtilsKt.squaredDistanceBetweenInclShips(
+            Minecraft.getInstance().level,
+            instance.x, instance.y, instance.z, other.x(), other.y(), other.z()) < range * range;
+    }
+
 }
