@@ -68,10 +68,39 @@ fun relocateBlock(
         tag
     }
 
+    // Kept unrotated for the POI bookkeeping below, which has to describe what was actually at `from`.
+    val originalState = state
+    val previousToState = toChunk.getBlockState(to)
+
     state = state.rotate(rotation)
 
     fromChunk.setBlockState(from, AIR, false)
     toChunk.setBlockState(to, state, false)
+
+    // Keep the point-of-interest index in step with the blocks we just moved.
+    //
+    // Vanilla does this from Level.setBlock, and these are CHUNK-level writes that deliberately bypass it --
+    // so without this call the POI manager is never told a workstation moved. Both halves go wrong, and both
+    // were visible in game:
+    //
+    //  - Assembling left a STALE record behind at the old world position. Villagers went on treating it as a
+    //    live job site: they would walk right past an adjacent bench to claim a helm that no longer existed,
+    //    stand at nothing, and never be assigned a profession -- and any villager already employed there kept
+    //    the job forever, because ValidateNearbyPoi asks the POI manager rather than the world, so the memory
+    //    was never invalidated and LoseJobOnSiteLoss never fired. That is the villager still wearing a
+    //    Crewman's coat after its wheel was broken.
+    //  - Disassembling registered NO record at the new world position, so a helm that had been part of a ship
+    //    was invisible to every villager. Placing a second helm beside it worked instantly, which is the
+    //    clearest possible statement that the block was fine and the index was not.
+    //
+    // Applies to every POI block a ship carries -- beds, bells, lodestones and every workstation -- not just
+    // ours. (1.21.1 names this Level.onBlockStateChange; later versions renamed it
+    // updatePOIOnBlockStateChange.) isClientSide guards it because the client's implementation is a no-op
+    // anyway.
+    if (!level.isClientSide) {
+        level.onBlockStateChange(from, originalState, AIR)
+        level.onBlockStateChange(to, previousToState, state)
+    }
 
     if (doUpdate) {
         updateBlock(level, from, to, state)
