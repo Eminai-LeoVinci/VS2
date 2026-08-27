@@ -19,6 +19,7 @@ import net.fabricmc.fabric.api.resource.IdentifiableResourceReloadListener
 import net.fabricmc.fabric.api.resource.ResourceManagerHelper
 import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.client.CameraType
+import net.minecraft.client.gui.screens.ChatScreen
 import net.minecraft.client.renderer.entity.EntityRendererProvider.Context
 import net.minecraft.commands.synchronization.SingletonArgumentInfo
 import net.minecraft.network.chat.Component
@@ -38,6 +39,7 @@ import net.minecraft.world.level.block.Block
 import org.valkyrienskies.mod.client.EmptyRenderer
 import org.valkyrienskies.mod.client.ShipCameraZoom
 import org.valkyrienskies.mod.client.ShipDebugRender
+import org.valkyrienskies.mod.client.ShipGamepad
 import org.valkyrienskies.mod.client.ShipMountPerspective
 import fuzs.forgeconfigapiport.fabric.api.neoforge.v4.NeoForgeConfigRegistry
 import fuzs.forgeconfigapiport.fabric.api.neoforge.v4.NeoForgeModConfigEvents
@@ -332,15 +334,74 @@ class ValkyrienSkiesModFabric : ModInitializer {
         // installed) -> first person. On foot the key is left alone, so vanilla and other
         // camera mods behave exactly as without VS2. The screen/overlay gate mirrors vanilla's
         // handleKeybinds call site so a GUI never eats perspective presses.
+        var chatGuard = 0
+        var lastCam: CameraType? = null
+        var lastShipView = false
         ClientTickEvents.START_CLIENT_TICK.register { client ->
+            // One gamepad poll per tick, ahead of every reader: the mounted D-pad handling below, the
+            // driving packet's ascend/descend, and any downstream mod's own pad layer (Eureka's crouch
+            // combos) all read the frame of state this establishes.
+            ShipGamepad.poll()
             if (client.player?.vehicle is ShipMountingEntity) {
+                // A controller mod's perspective button is NATIVE -- it sets the camera type directly and
+                // never presses F5, so the click-drain cycle below never sees it and the virtual ship
+                // view was unreachable from a pad. Detect its wrap instead: a FRONT -> FIRST transition
+                // that did not leave the ship view is the cycle passing our slot, and is re-read as
+                // entering it.
+                if (lastCam == CameraType.THIRD_PERSON_FRONT &&
+                    client.options.cameraType == CameraType.FIRST_PERSON && !lastShipView
+                ) {
+                    ShipMountPerspective.externalWrapToFirst(client)
+                }
                 ShipMountPerspective.tickMounted()
+                // A controller mod's D-pad actions are NATIVE -- chat on up, a radial menu on right --
+                // not keybinds, so no click drain can reach them, and each one opens a SCREEN over the
+                // press. While the wheel owns the D-pad, any such screen popping up under a held or
+                // just-released direction is the pad's own double-fire: close it, so a climb climbs and
+                // a zoom keeps zooming instead of dying under a radial. The few-tick grace catches taps,
+                // whose screens arrive after the button is already back up.
+                if (chatGuard > 0) chatGuard--
+                if (ShipGamepad.dpadUp() || ShipGamepad.dpadDown() ||
+                    ShipGamepad.dpadLeft() || ShipGamepad.dpadRight()
+                ) {
+                    chatGuard = 5
+                }
+                val screen = client.screen
+                if (chatGuard > 0 && screen != null &&
+                    (screen is ChatScreen || screen.javaClass.name.startsWith("dev.isxander"))
+                ) {
+                    client.setScreen(null)
+                }
                 if (client.screen == null && client.overlay == null) {
                     while (client.options.keyTogglePerspective.consumeClick()) {
                         ShipMountPerspective.cycleMounted(client)
                     }
+                    // D-pad zoom while the ship camera is on screen: LEFT eases in toward the ship-set
+                    // baseline, RIGHT pulls out, half a notch per held tick -- the full sweep in under
+                    // a second. The gate is read BOTH ways because the flag is written by the render
+                    // pass and this runs at tick time: the virtual-slot state is the tick-side truth
+                    // for the standing helm, the flag covers the seated third-person views.
+                    if (ShipCameraZoom.isShipCameraActive() || ShipMountPerspective.isShipViewEngaged()) {
+                        if (ShipGamepad.dpadLeft()) ShipCameraZoom.scroll(0.5)
+                        if (ShipGamepad.dpadRight()) ShipCameraZoom.scroll(-0.5)
+                    }
+                    // A pad button usually carries a meaning of its own in a controller mod (D-pad Left
+                    // commonly ships as Pick Block), delivered as a vanilla keybind click on the same
+                    // physical press. While the wheel owns the D-pad, a fresh D-pad press claims the
+                    // whole button: swallow every click queued this tick before handleKeybinds -- which
+                    // runs mid-tick, after this hook -- can fire the other half.
+                    if (ShipGamepad.anyDpadPressed()) {
+                        for (mapping in client.options.keyMappings) {
+                            while (mapping.consumeClick()) {
+                                // drained
+                            }
+                        }
+                    }
                 }
             }
+            // The wrap detector's memory of last tick, taken after everything above has had its say.
+            lastCam = client.options.cameraType
+            lastShipView = ShipMountPerspective.isShipViewEngaged()
         }
 
         // Always drop back to first person when the player dismounts a ship mount (helm seat),
