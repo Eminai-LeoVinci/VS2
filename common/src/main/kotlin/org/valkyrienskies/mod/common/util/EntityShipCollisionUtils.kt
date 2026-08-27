@@ -297,10 +297,50 @@ object EntityShipCollisionUtils {
 
     // === Gravity-only hold through ship transitions ===
     // A short, bounded "hold the entity's downward movement" window used while a ship's voxel collision isn't
-    // solid yet (login / assembly / disassembly). Login + assembly reuse the ship-id [recentlySpawnedShips]
-    // grace path (the ship still exists); DISASSEMBLY has no ship to key on, so it arms a world-space box here.
-    private class WorldFreezeEntry(val dimensionId: String, val aabb: AABBd, val deadlineGameTime: Long)
+    // solid yet (login / assembly / disassembly). The world-freeze is keyed on a WORLD-space AABB rather than
+    // a ship id, so it does not depend on a ship existing or on its chunk set being populated -- which is
+    // exactly the state of affairs during a swap in either direction. Both ends of the trip need it:
+    // DISASSEMBLY, where the shipyard collision vanishes for a split second before the world blocks become
+    // collidable, and ASSEMBLY, where the world blocks are lifted out before the shipyard copy is collidable.
+    // (Login keeps using the ship-id [recentlySpawnedShips] path, since the ship plainly exists there.)
+    // ## Players are released DYNAMICALLY, the deadline is only their cap
+    // The deadline has to be sized for the worst case -- a big hull on a struggling server -- which makes it
+    // two seconds of standing in the air for the common case, where the swapped copy is collidable again
+    // within a tick or two. So a held PLAYER is probed each tick for whether anything would actually support
+    // them ([probeWouldSupport]: the same ship-polygon query that real entity collision runs, plus a plain
+    // world-collision check), and released the tick after the first probe that passes -- support must hold on
+    // two consecutive probes, so a transient can never release into a fall-through. The release is remembered
+    // against the freezes that existed at that moment ([createdGameTime] vs [freezeReleasedAt]), so a LATER
+    // transition holds the same player again. Mobs and everything else keep the plain deadline: an extra
+    // second of hold costs them nothing, and probing every held entity would buy nothing back.
+    //
+    // Hitting the deadline means the probe never passed, i.e. collision genuinely never came up in time --
+    // which is why the cap must not be shortened: releasing early THERE is exactly the fall-through this
+    // whole mechanism exists to prevent.
+    private class WorldFreezeEntry(
+        val dimensionId: String,
+        val aabb: AABBd,
+        val deadlineGameTime: Long,
+        val createdGameTime: Long
+    )
     private val worldFreezes = ConcurrentLinkedQueue<WorldFreezeEntry>()
+
+    /**
+     * Dynamic-release bookkeeping for held players, keyed by network entity id. [freezeSupportSeen] is the
+     * handshake's first half (gameTime of the first passing support probe); [freezeReleasedAt] is a granted
+     * release, exempting the player from every freeze CREATED before it. Written only on the SERVER side --
+     * in singleplayer both sides share this object, and the client (which cannot probe) must never touch the
+     * handshake or it would wipe the server's stamps between server ticks. Both maps are cleared whenever the
+     * freeze queue is seen empty, which bounds their lifetime to the transition windows themselves.
+     */
+    private val freezeSupportSeen = ConcurrentHashMap<Int, Long>()
+    private val freezeReleasedAt = ConcurrentHashMap<Int, Long>()
+
+    /** How far below a held player the support probe reaches: covers the grid snap and a jump caught mid-air. */
+    private const val SUPPORT_PROBE_BLOCKS = 2.0
+
+    /** Minimum age of a support stamp before the next passing probe releases -- "detect one tick, free the next". */
+    private const val SUPPORT_CONFIRM_TICKS = 1L
 
     /** The ship's world-space bounding box (from its shipyard AABB transformed to world), for [markWorldFreeze]. */
     @JvmStatic
@@ -324,17 +364,29 @@ object EntityShipCollisionUtils {
      */
     @JvmStatic
     fun markWorldFreeze(level: Level, aabb: AABBd, durationTicks: Long) {
-        worldFreezes.add(WorldFreezeEntry(level.dimensionId, aabb, level.gameTime + durationTicks))
+        val now = level.gameTime
+        worldFreezes.add(WorldFreezeEntry(level.dimensionId, aabb, now + durationTicks, now))
     }
 
     @JvmStatic
     fun isInWorldFreeze(entity: Entity): Boolean {
-        if (worldFreezes.isEmpty()) return false
-        val now = entity.level().gameTime
-        val dim = entity.level().dimensionId
+        if (worldFreezes.isEmpty()) {
+            // Nothing can be holding anyone, so no release bookkeeping can matter either. Dropping it here is
+            // what keeps the maps' lifetime bounded to the transition windows and lets stale entity ids from
+            // respawns or dimension hops wash out.
+            if (freezeSupportSeen.isNotEmpty()) freezeSupportSeen.clear()
+            if (freezeReleasedAt.isNotEmpty()) freezeReleasedAt.clear()
+            return false
+        }
+        val level = entity.level()
+        val now = level.gameTime
+        val dim = level.dimensionId
         val px = entity.x
         val py = entity.y
         val pz = entity.z
+        // A granted release exempts this player from every freeze that already existed when it was granted --
+        // and from nothing younger, so the next transition holds them again like anyone else.
+        val releasedAt = if (entity is Player) freezeReleasedAt[entity.id] ?: 0L else 0L
         var held = false
         val it = worldFreezes.iterator()
         while (it.hasNext()) {
@@ -343,7 +395,7 @@ object EntityShipCollisionUtils {
                 it.remove()
                 continue
             }
-            if (!held && e.dimensionId == dim &&
+            if (!held && e.createdGameTime > releasedAt && e.dimensionId == dim &&
                 px >= e.aabb.minX() && px <= e.aabb.maxX() &&
                 py >= e.aabb.minY() && py <= e.aabb.maxY() &&
                 pz >= e.aabb.minZ() && pz <= e.aabb.maxZ()
@@ -351,23 +403,67 @@ object EntityShipCollisionUtils {
                 held = true
             }
         }
-        return held
+        if (!held) return false
+
+        // The dynamic release, players only and SERVER only. The client never touches the handshake: in
+        // singleplayer it shares these maps, and a client-side "probe failed" (it cannot probe) would wipe
+        // the server's stamp between server ticks. The client still benefits -- it reads the granted release
+        // above one tick behind the server, and on a dedicated server it never had freeze entries at all.
+        if (entity is Player && level is ServerLevel) {
+            if (probeWouldSupport(entity, level)) {
+                val firstSeen = freezeSupportSeen.putIfAbsent(entity.id, now) ?: now
+                if (now - firstSeen >= SUPPORT_CONFIRM_TICKS) {
+                    freezeSupportSeen.remove(entity.id)
+                    freezeReleasedAt[entity.id] = now
+                    return false
+                }
+            } else {
+                // Support must hold on consecutive probes; a transient never releases into a fall-through.
+                freezeSupportSeen.remove(entity.id)
+            }
+        }
+        return true
+    }
+
+    /**
+     * Would anything actually hold [player] up right now? True the moment the swapped copy is back.
+     *
+     * Two half-probes, either sufficient. The ship half is [getShipPolygonsCollidingWithEntity] with a short
+     * downward cast -- by construction the very predicate real entity collision runs, so "the probe passes"
+     * and "the deck is solid" cannot disagree, rotated hulls included. The world half is a plain collision
+     * test the same distance down, which is what releases the disassembly direction (the world copy is placed
+     * synchronously) and frees a player who was merely standing on terrain inside the footprint -- held the
+     * full deadline today for nothing.
+     */
+    private fun probeWouldSupport(player: Player, level: ServerLevel): Boolean {
+        val box = player.boundingBox
+        if (!level.noCollision(player, box.move(0.0, -SUPPORT_PROBE_BLOCKS, 0.0))) return true
+        return getShipPolygonsCollidingWithEntity(
+            player, Vec3(0.0, -SUPPORT_PROBE_BLOCKS, 0.0), box, level
+        ).isNotEmpty()
     }
 
     /**
      * Whether [entity]'s GRAVITY (only) should be held this tick: it is in a ship-transition zone where the
-     * deck collision isn't solid yet -- a DISASSEMBLY world-freeze, OR over a freshly-loaded/assembled ship
-     * still in its spawn-grace (login / assembly). Used by MixinEntity.vs$holdGravityDuringShipTransition to
+     * deck collision isn't solid yet -- an ASSEMBLY or DISASSEMBLY world-freeze, OR over a freshly-loaded ship
+     * still in its spawn-grace (login). Used by MixinEntity.vs$holdGravityDuringShipTransition to
      * clamp ONLY the downward movement, so the entity keeps full X/Z + camera control but cannot fall through.
      * Deadline-bounded by both [worldFreezes] and [recentlySpawnedShips], so it never holds forever.
-     *
-     * MOBS / ENTITIES ONLY -- players are excluded (the downward-clamp made elytra/creative flight feel floaty,
-     * and they don't fall through on transitions anyway), keeping player flight + gravity completely vanilla.
      */
     @JvmStatic
     fun shouldHoldGravity(entity: Entity): Boolean {
-        if (entity is Player) return false
+        // EXPLICIT transition window: everything in it is held, PLAYERS INCLUDED. A world-freeze is only ever
+        // armed by the code performing an assembly or a disassembly, over that hull's own footprint, for about
+        // two seconds -- so a player is held exactly when the deck under them is mid-swap and provably not
+        // collidable. Players were excluded from BOTH paths originally, on the reading that they never fell
+        // through; they do, just less often than mobs, because the window they have to be inside is short.
         if (isInWorldFreeze(entity)) return true
+        // PASSIVE spawn-grace: mobs and other entities only. This one fires for any freshly loaded or
+        // assembled ship an entity happens to be standing over, including ones nobody is interacting with, so
+        // it is far broader in time and space than a world-freeze -- and clamping a player's descent inside it
+        // is what made elytra gliding near ships feel floaty, like permanent slow-falling. Keeping players out
+        // of THIS path is what that exclusion was actually protecting.
+        if (entity is Player) return false
         val level = entity.level()
         if (!(level is ServerLevel || (level.isClientSide && level is ClientLevel))) return false
         val snapshot = dimShipSnapshot(level)
