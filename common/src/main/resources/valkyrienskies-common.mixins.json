@@ -4,6 +4,8 @@
   "compatibilityLevel": "JAVA_17",
   "plugin": "org.valkyrienskies.mod.mixin.ValkyrienCommonMixinConfigPlugin",
   "mixins": [
+    "accessors.world.entity.LivingEntityAccessor",
+    "feature.shipyard_entities.MixinServerEntityEquipment",
     "accessors.entity.EntityAccessor",
     "accessors.network.ConnectionAccessor",
     "accessors.network.protocol.game.ClientboundSectionBlocksUpdatePacketAccessor",
