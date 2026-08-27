@@ -74,7 +74,15 @@ fun relocateBlock(
 
     state = state.rotate(rotation)
 
-    fromChunk.setBlockState(from, AIR, false)
+    // isMoving = TRUE on the removal, because that is exactly what this is: the block is being MOVED, not
+    // broken. Vanilla gates a lot of "my neighbour just disappeared" behaviour on this flag -- it is the
+    // same contract a piston uses. With it false, taking a ship apart destroyed redstone: removing one wire
+    // ran RedStoneWireBlock.onRemove -> updateNeighborsAt -> the neighbouring wire.s canSurvive, still in the
+    // shipyard, whose supporting deck block had ALREADY been relocated out -- so it found air beneath itself
+    // and popped, dropping its item INTO the shipyard. Those drops only became visible when the ship.s
+    // entities were moved out at the end, which is why it read as "disassembly breaks redstone at random".
+    // (Stack-trace confirmed 2026-08-26; the survivors were simply the wires whose support had not moved yet.)
+    fromChunk.setBlockState(from, AIR, true)
     toChunk.setBlockState(to, state, false)
 
     // Keep the point-of-interest index in step with the blocks we just moved.
