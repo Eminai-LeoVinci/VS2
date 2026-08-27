@@ -4,6 +4,8 @@ import net.minecraft.core.BlockPos
 import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.Clearable
+import net.minecraft.world.entity.decoration.BlockAttachedEntity
+import net.minecraft.world.entity.decoration.HangingEntity
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.LevelReader
@@ -16,6 +18,7 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlac
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessor
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessorType
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate
+import net.minecraft.world.phys.AABB
 import org.joml.Quaterniond
 import org.joml.RoundingMode
 import org.joml.Vector3d
@@ -296,6 +299,13 @@ object ShipAssembler {
             BlockPos(cornerOfShip.x + dx, cornerOfShip.y + dy, cornerOfShip.z + dz)
         }
         initSkyLightForShip(level, moveDestPositions)
+
+        // ========== Carrying Attached Entities
+        // Only when the originals are actually leaving: a copy leaves the source structure standing, so the
+        // frames hanging on it are still supported and belong exactly where they are.
+        if (removeOriginal) {
+            carryBlockAttachedEntities(level, blocks, minStructurePos, maxStructurePos, cornerOfShip)
+        }
 
         // ========== Resume Chunk Updates
         val timeAtExecution = level.server.tickCount
@@ -623,6 +633,8 @@ object ShipAssembler {
                 initSkyLightForShip(level, destPositions2)
             }
 
+            carryBlockAttachedEntities(level, filteredBlocks, pending.minB, pending.maxB, cornerOfShip)
+
             // Set kinematics
             val posOffset = Vector3d(pending.toShip.inertiaData.centerOfMass)
                 .sub(Vector3d(centerOfShip))
@@ -736,6 +748,61 @@ object ShipAssembler {
 
         // getType is used for referencing this processor from a datapack, which we don't need
         override fun getType(): StructureProcessorType<*>? = null
+    }
+
+    /**
+     * Carries item frames, glow item frames, paintings and leash knots onto the ship along with the block each
+     * one is attached to.
+     *
+     * These are ENTITIES, not blocks, so the voxel set an assembly copies never contains them: the wall goes to
+     * the shipyard and the frame stays behind at its old coordinates, now hanging on nothing.
+     * [BlockAttachedEntity.tick] re-runs its survives() check every 100 ticks, finds no support, and discards
+     * itself with a dropItem -- so a few seconds after the ship sails the frame and its contents are lying on
+     * the ground where the hull used to be.
+     *
+     * VS2 already intends these to live inside the ship: the vs_entities data pairs item_frame,
+     * glow_item_frame, painting and leash_knot to valkyrienskies:shipyard, and the shipyard_entities mixins
+     * render, collide and section them there. Nothing ever moved them there, because the generic
+     * world-to-shipyard transfer keys off position CHANGES and a block-attached entity never moves on its own.
+     * So carry them explicitly, by the same integer translation the blocks take.
+     *
+     * Only entities whose SUPPORT assembled are carried. For a hanging entity that support is the block BEHIND
+     * it, not the one it occupies -- the entity itself hangs in the air block in front of the wall, which is
+     * never part of the ship. Leash knots are the exception: they sit in the fence they are tied to.
+     *
+     * Must run AFTER the destination blocks are placed, so nothing is briefly unsupported at either end.
+     */
+    private fun carryBlockAttachedEntities(
+        level: ServerLevel,
+        blocks: Set<BlockPos>,
+        minStructurePos: BlockPos,
+        maxStructurePos: BlockPos,
+        cornerOfShip: BlockPos
+    ) {
+        val dx = cornerOfShip.x - minStructurePos.x
+        val dy = cornerOfShip.y - minStructurePos.y
+        val dz = cornerOfShip.z - minStructurePos.z
+        if (dx == 0 && dy == 0 && dz == 0) return
+
+        // Inflated a block on every side: a hanging entity occupies the air block in FRONT of its wall, so one
+        // mounted on an outward-facing hull face sits just outside the structure's own bounds.
+        val searchBox = AABB(
+            minStructurePos.x - 1.0, minStructurePos.y - 1.0, minStructurePos.z - 1.0,
+            maxStructurePos.x + 2.0, maxStructurePos.y + 2.0, maxStructurePos.z + 2.0
+        )
+
+        for (entity in level.getEntitiesOfClass(BlockAttachedEntity::class.java, searchBox)) {
+            if (entity.isRemoved) continue
+
+            val anchor = entity.pos
+            val support = if (entity is HangingEntity) anchor.relative(entity.direction.opposite) else anchor
+            if (!blocks.contains(support)) continue
+
+            // setPos on a BlockAttachedEntity re-derives its anchor BlockPos and bounding box from the
+            // coordinates given, so aiming at the centre of the destination block moves the whole thing. A raw
+            // position write would leave the anchor -- and so the survives() check -- pointing at the old block.
+            entity.setPos(anchor.x + dx + 0.5, anchor.y + dy + 0.5, anchor.z + dz + 0.5)
+        }
     }
 
     // Pre-computed "all sky light 15" DataLayer template (2048 bytes, every nibble = 0xF).
