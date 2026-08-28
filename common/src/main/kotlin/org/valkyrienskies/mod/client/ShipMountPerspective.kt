@@ -67,6 +67,22 @@ object ShipMountPerspective {
         }
     }
 
+    /**
+     * An EXTERNAL perspective toggle -- a controller mod's native cycle, which never presses the F5
+     * KeyMapping and so never reaches [cycleMounted] -- observed wrapping FRONT -> FIRST while mounted.
+     * The wrap is re-read as the entry into the virtual ship-view slot, exactly where the consumed-click
+     * cycle would have gone; the NEXT wrap, made while the ship view is engaged, has already had the flag
+     * cleared by [tickMounted] (the camera left the slot), so it passes through as the true return to
+     * first person and the controller sees the same four-stop cycle the keyboard does. (On 1.20.1 the
+     * virtual slot rides THIRD_PERSON_BACK -- see the class doc -- so that is what the door engages.)
+     */
+    @JvmStatic
+    fun externalWrapToFirst(mc: Minecraft) {
+        if (shipView || ShoulderSurfingCompat.isShoulderSurfing()) return
+        shipView = true
+        withVanillaToggleParity(mc) { mc.options.cameraType = CameraType.THIRD_PERSON_BACK }
+    }
+
     /** Advance one slot in the mounted cycle. Called once per queued F5 click. */
     @JvmStatic
     fun cycleMounted(mc: Minecraft) {

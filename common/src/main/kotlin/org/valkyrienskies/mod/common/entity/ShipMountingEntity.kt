@@ -24,6 +24,7 @@ import org.valkyrienskies.core.api.ships.LoadedShip
 import org.valkyrienskies.core.api.ships.Ship
 import org.valkyrienskies.core.api.ships.setAttachment
 import org.valkyrienskies.mod.api.SeatedControllingPlayer
+import org.valkyrienskies.mod.client.ShipGamepad
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod
 import org.valkyrienskies.mod.common.config.VSKeyBindings
 import org.valkyrienskies.mod.common.getLoadedShipManagingPos
@@ -280,9 +281,12 @@ open class ShipMountingEntity(type: EntityType<ShipMountingEntity>, level: Level
         val backward = opts.keyDown.isDown
         val left = opts.keyLeft.isDown
         val right = opts.keyRight.isDown
-        val up = opts.keyJump.isDown
+        // The D-pad reads come straight off the hardware (ShipGamepad), so a pad
+        // flies the ship with no keybind setup at all: up is climb, down is dive,
+        // in every perspective, whenever this seat is the one being ridden.
+        val up = opts.keyJump.isDown || ShipGamepad.dpadUp()
         val sprint = this.controllingPassenger?.isSprinting == true
-        val down = VSKeyBindings.shipDown.get().isDown
+        val down = VSKeyBindings.shipDown.get().isDown || ShipGamepad.dpadDown()
         val cruise = VSKeyBindings.shipCruise.get().isDown
 
         val impulse = Vector3f()
