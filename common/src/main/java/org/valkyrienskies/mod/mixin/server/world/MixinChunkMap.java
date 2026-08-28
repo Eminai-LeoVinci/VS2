@@ -135,4 +135,38 @@ public abstract class MixinChunkMap {
             }
         }
     }
+
+    /**
+     * Let entities living in a shipyard chunk have their changes broadcast to clients.
+     *
+     * <p>{@code ChunkMap.tick} only calls {@code ServerEntity.sendChanges} for an entity whose chunk is
+     * {@code inEntityTickingRange}, and ship chunks are deliberately held at BLOCK_TICKING and never
+     * ENTITY_TICKING (see MixinChunkHolder) so that the shipyard does not tick mobs. The two decisions
+     * combine badly: every entity that genuinely lives in the shipyard -- item frames, paintings, armor
+     * stands, minecarts -- is tracked and rendered by the client, and then never receives a single update
+     * again. Its state only ever arrives in the pairing data at spawn.
+     *
+     * <p>In game that reads as an item frame on a ship refusing to accept an item: the server placed it and
+     * said CONSUME, the client's copy simply never heard, and a relog "fixed" it because rejoining re-sends
+     * the pairing data. Rotation, armor-stand equipment and minecart contents are the same bug.
+     *
+     * <p>Only widens the gate, and only for shipyard chunks: entity TICKING is untouched, so nothing starts
+     * ticking that was not ticking before -- this decides who gets told about changes, not who changes.
+     */
+    @WrapOperation(
+        method = "tick()V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lnet/minecraft/server/level/ChunkMap$DistanceManager;inEntityTickingRange(J)Z"
+        ),
+        require = 1
+    )
+    private boolean valkyrienskies$broadcastShipyardEntityChanges(final DistanceManager instance,
+        final long chunkPos, final Operation<Boolean> original) {
+        if (original.call(instance, chunkPos)) {
+            return true;
+        }
+        return VSGameUtilsKt.isChunkInShipyard(this.level, ChunkPos.getX(chunkPos), ChunkPos.getZ(chunkPos));
+    }
+
 }
