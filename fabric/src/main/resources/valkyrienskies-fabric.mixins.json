@@ -26,6 +26,7 @@
     "compat.create.client.MixinCullingBlockEntityIterator",
     "compat.create.client.MixinSuperGlueSelectionHandler",
     "compat.emf.MixinEMFAnimationEntityContext",
+    "compat.emf.MixinEMFArmsAtHelm",
     "compat.sodium.MixinSodiumWorldRenderer",
     "feature.command_suggestion_merge.MixinClientPacketListener",
     "feature.duplicate_keybindings.KeyMappingAccessor",
