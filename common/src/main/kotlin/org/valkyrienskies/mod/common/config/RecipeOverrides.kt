@@ -13,11 +13,16 @@ import java.nio.file.Path
 /**
  * Config-driven crafting recipe overrides.
  *
- * Reads `config/vs_eureka_recipes.json` (a friendly 9-slot format) and converts each entry into a
+ * Reads `config/vs_eureka_armada_recipes.json` (a friendly 9-slot format) and converts each entry into a
  * standard Minecraft crafting-recipe JSON. [org.valkyrienskies.mod.mixin.feature.config_recipes.MixinRecipeManager]
  * splices those into the datapack id->JSON map before `RecipeManager.apply` parses it, REPLACING the
  * matching built-in recipe (matched by id). Re-read on every recipe (re)load, so `/reload` picks up
  * edits live.
+ *
+ * The name is Armada's, not `vs_eureka_recipes.json`: that one belongs to Eureka Ships, and the two mods
+ * ship different recipes. Since this file is only ever written when ABSENT, a shared name would mean
+ * whichever mod ran first froze its recipe set in place and the other silently inherited it. Armada keeps
+ * its own; Eureka Ships' file is neither read nor touched.
  *
  * - File absent  -> the bundled defaults are written out, then loaded.
  * - File present -> parsed; malformed entries are skipped (built-in recipe left intact); a wholly
@@ -42,7 +47,7 @@ import java.nio.file.Path
  */
 object RecipeOverrides {
     private val logger by logger()
-    private val CONFIG_FILE: Path = Path.of("config", "vs_eureka_recipes.json")
+    private val CONFIG_FILE: Path = Path.of("config", "vs_eureka_armada_recipes.json")
     private val gson = GsonBuilder().setPrettyPrinting().create()
 
     private var overrideCache: Map<String, JsonObject> = LinkedHashMap()
@@ -76,6 +81,7 @@ object RecipeOverrides {
                 logger.info("Created default recipe config at " + CONFIG_FILE.toAbsolutePath())
             }
             val root = JsonParser.parseString(Files.readString(CONFIG_FILE)).asJsonObject
+            mergeMissingDefaults(root)
             for ((id, specEl) in root.entrySet()) {
                 if (id.startsWith("_")) continue // inline-note key
                 if (specEl.isJsonPrimitive && specEl.asString.equals("remove", ignoreCase = true)) {
@@ -102,6 +108,53 @@ object RecipeOverrides {
         }
         overrideCache = overrides
         removalCache = removals
+    }
+
+    /**
+     * Add any recipe the defaults know about and the file on disk does not, then write it back.
+     *
+     * Without this, [defaultConfig] only ever reaches a player who has never launched the mod before: the
+     * file is written when ABSENT and read otherwise, so every recipe added after a player's first launch
+     * was invisible to them for ever. That is not a hypothetical -- a new block would ship with a recipe
+     * nobody upgrading could craft, and the only fix was "delete your recipe config", which throws away
+     * every tuning decision in it.
+     *
+     * Only ADDS. An entry already in the file is left exactly as the player left it, including a
+     * deliberately retuned one, so this can never quietly undo an edit. The one thing it cannot tell apart
+     * is a recipe the player DELETED to disable it -- that comes back. Setting it to `"remove"` is the
+     * documented way to switch a recipe off, and unlike deletion it survives this merge and every future one.
+     *
+     * `_README` is refreshed rather than merged: it is documentation, not configuration, and a stale copy of
+     * it is worse than none.
+     */
+    private fun mergeMissingDefaults(root: JsonObject) {
+        val defaults = defaultConfig()
+        var added = 0
+        for ((id, spec) in defaults.entrySet()) {
+            if (id == "_README") continue
+            if (root.has(id)) continue
+            root.add(id, spec)
+            added++
+        }
+
+        val readme = defaults.get("_README")
+        val readmeStale = readme != null && root.get("_README") != readme
+        if (added == 0 && !readmeStale) return
+        if (readme != null) root.add("_README", readme)
+
+        try {
+            Files.writeString(CONFIG_FILE, gson.toJson(root))
+            if (added > 0) {
+                logger.info(
+                    "Added " + added + " new default recipe(s) to " + CONFIG_FILE.fileName +
+                        "; existing entries were left untouched. Set one to \"remove\" to disable it."
+                )
+            }
+        } catch (e: Exception) {
+            // The merged recipes are already in `root`, so this run still behaves correctly -- only the
+            // write-back failed, and it will be retried on the next reload.
+            logger.warn("Could not write merged recipe config: " + e.message)
+        }
     }
 
     // ---- friendly 9-slot spec -> standard crafting-recipe JSON ----
@@ -198,11 +251,11 @@ object RecipeOverrides {
         return if (t.contains(':')) t else "minecraft:$t"
     }
 
-    // ---- bundled defaults: the same recipe set the 1.21.11 build ships ----
+    // ---- bundled defaults: Armada's recipe set, re-expressed for 1.20.1 ----
     // Eureka ships its recipes under data/vs_eureka/recipes/ (the pre-1.21 path) in the old
     // item/tag object format, so none of them load on 1.21+ and the items would be uncraftable.
-    // We regenerate the recipes here so a fresh install gets craftable Eureka items; users can
-    // edit this file (or drop in their own overhauls) and /reload to change them.
+    // We regenerate the recipes here so a fresh install gets craftable items; users can edit this
+    // file (or drop in their own overhauls) and /reload to change them.
 
     private val SHIP_HELM_WOODS = listOf(
         "oak", "spruce", "birch", "jungle", "acacia", "dark_oak", "crimson", "warped"
@@ -258,10 +311,12 @@ object RecipeOverrides {
         val root = JsonObject()
         root.addProperty(
             "_README",
-            "vs_eureka recipe overrides (defaults = the original Eureka recipes). 9 slots: 1=top-left .. " +
+            "Eureka Armada recipe overrides (defaults = Armada's own recipes). 9 slots: 1=top-left .. " +
                 "5=centre .. 9=bottom-right. Slot = \"namespace:item\", \"#namespace:tag\", [\"a\",\"b\"] for " +
                 "alternatives, or \"\" for empty. type=shaped|shapeless, plus result + count. Set a recipe to " +
-                "\"remove\" to disable it. Edit then /reload."
+                "\"remove\" to disable it. Edit then /reload. Recipes added by a mod update are appended here " +
+                "automatically; entries already in this file are never rewritten, so use \"remove\" rather " +
+                "than deleting a recipe you want gone -- a deleted one comes back on the next update."
         )
 
         // Ship helm, one per wood:  B F B   F h F   S L S
@@ -322,6 +377,30 @@ object RecipeOverrides {
             )
         )
 
+        // Shipwright's Bench:  G A C   S M T   p p p
+        // (G=grindstone, A=any anvil, C=crafting table, S=stonecutter, M=cartography table,
+        //  T=smithing table, p=any planks)
+        //
+        // Every station in the grid is a station standing on the finished desk, which is what makes a recipe
+        // this expensive read as assembly rather than as a toll. The anvil is the tag, so a chipped or
+        // damaged one is accepted -- refusing a dented anvil for a workbench that already has one dented into
+        // its top would be a strange thing to insist on.
+        //
+        // This is also the switch for the whole feature: set this entry to "remove" and the Shipwright's
+        // Bench becomes uncraftable again, which is the behaviour it shipped with and the one that makes
+        // shipwrights something you can only find rather than make.
+        root.add(
+            "vs_eureka:shipwrights_bench",
+            shaped(
+                listOf(
+                    s("minecraft:grindstone"), s("#minecraft:anvil"), s("minecraft:crafting_table"),
+                    s("minecraft:stonecutter"), s("minecraft:cartography_table"), s("minecraft:smithing_table"),
+                    s("#minecraft:planks"), s("#minecraft:planks"), s("#minecraft:planks")
+                ),
+                "vs_eureka:shipwrights_bench", 1
+            )
+        )
+
         // Ballast:  # C #   C _ C   # C #   (#=stone, C=cobblestone)
         root.add(
             "vs_eureka:ballast",
@@ -358,6 +437,117 @@ object RecipeOverrides {
                     "vs_eureka:${c}_balloon", 1, "colored_balloons"
                 )
             )
+        }
+
+        // Ship Bottle:  _ E _   _ H _   _ B _
+        // (E=eye of ender, H=heart of the sea, B=glass bottle) -- an Armada item rather than a classic
+        // Eureka one, but it lives here so it is retunable from the same config as everything else.
+        // The padding columns are stripped when the pattern is parsed, so this works in any column.
+        root.add(
+            "vs_eureka:ship_bottle",
+            shaped(
+                listOf(
+                    none(), s("minecraft:ender_eye"), none(),
+                    none(), s("minecraft:heart_of_the_sea"), none(),
+                    none(), s("minecraft:glass_bottle"), none()
+                ),
+                "vs_eureka:ship_bottle", 1
+            )
+        )
+
+        // Ship Blueprint: shapeless paper + lapis. Cheap on purpose -- a blueprint costs nothing to draft and
+        // is worth nothing until a shipwright reads it; the price of a ship is the materials list inside.
+        root.add(
+            "vs_eureka:blueprint",
+            shapeless(
+                listOf(s("minecraft:paper"), s("minecraft:lapis_lazuli")),
+                "vs_eureka:blueprint", 1
+            )
+        )
+
+        // Cannonballs = 8:  N I N   I I I   N I N
+        // (I=ingot in a plus, N=that metal's nugget in the corners). Eight to a batch because a gun deck
+        // eats them and they only stack to 16 -- shot is meant to be bulky to keep, not tedious to make.
+        //
+        // Netherite has no nugget, so it takes raw gold in the corners instead. That is not a filler
+        // substitution: netherite is smithed WITH gold, so gold in the corners is the material already in
+        // its lineage, and it keeps the most expensive round in the game visibly the most expensive.
+        //
+        // Copper has no nugget on 1.20.1 either (its nugget arrives with the Copper Age drop), so it takes
+        // raw copper in the corners by the same no-nugget rule netherite follows.
+        for ((ball, ingot, corner) in listOf(
+            Triple("copper", "minecraft:copper_ingot", "minecraft:raw_copper"),
+            Triple("iron", "minecraft:iron_ingot", "minecraft:iron_nugget"),
+            Triple("gold", "minecraft:gold_ingot", "minecraft:gold_nugget"),
+            Triple("netherite", "minecraft:netherite_ingot", "minecraft:raw_gold")
+        )) {
+            root.add(
+                "vs_eureka:${ball}_cannonball",
+                shaped(
+                    listOf(
+                        s(corner), s(ingot), s(corner),
+                        s(ingot), s(ingot), s(ingot),
+                        s(corner), s(ingot), s(corner)
+                    ),
+                    "vs_eureka:${ball}_cannonball", 8, "cannonballs"
+                )
+            )
+        }
+
+        // Steel = 8:  C R C   R I I   C I I
+        // (I=iron ingot in a 2x2 at the bottom right, R=raw iron, C=coal or charcoal in the free corners).
+        // Steel is smelted rather than mined, so its recipe is the only one in the family that is not a
+        // symmetrical arrangement of one metal: iron and raw iron cooked with carbon.
+        val carbon = anyOf("minecraft:coal", "minecraft:charcoal")
+        root.add(
+            "vs_eureka:steel_cannonball",
+            shaped(
+                listOf(
+                    carbon, s("minecraft:raw_iron"), carbon,
+                    s("minecraft:raw_iron"), s("minecraft:iron_ingot"), s("minecraft:iron_ingot"),
+                    carbon, s("minecraft:iron_ingot"), s("minecraft:iron_ingot")
+                ),
+                "vs_eureka:steel_cannonball", 8, "cannonballs"
+            )
+        )
+
+        // Charged rounds = 4:  M P P   P B B   P B B
+        // (B=four of that cannonball in a 2x2 at the bottom right, mirroring the steel layout, M=that
+        // metal's raw form in the upper-left, P=the charge filling the rest). Four in, four out: a charge is
+        // packed into shells you already have rather than cast into new ones.
+        //
+        // The charged rounds share the shape and differ only in the filling, which is the whole point --
+        // the recipe reads as "same round, different filling", exactly as the items do. Armor-piercing takes
+        // diamonds where the others take powder: a coating rather than a charge, and priced like one.
+        for ((prefix, powderId) in listOf(
+            "explosive" to "minecraft:gunpowder",
+            "incendiary" to "minecraft:blaze_powder",
+            "armor_piercing" to "minecraft:diamond"
+        )) {
+            for (ball in listOf("copper", "iron", "steel", "gold", "netherite")) {
+                val raw = when (ball) {
+                    "copper" -> "minecraft:raw_copper"
+                    // Steel is an iron alloy and has no raw form of its own.
+                    "iron", "steel" -> "minecraft:raw_iron"
+                    "gold" -> "minecraft:raw_gold"
+                    // Scrap, not debris: the charge is packed against refined metal, and debris is the ORE --
+                    // asking for it here read as a mistake to anyone who knows the smelting chain.
+                    else -> "minecraft:netherite_scrap"
+                }
+                val shot = s("vs_eureka:${ball}_cannonball")
+                val powder = s(powderId)
+                root.add(
+                    "vs_eureka:${prefix}_${ball}_cannonball",
+                    shaped(
+                        listOf(
+                            s(raw), powder, powder,
+                            powder, shot, shot,
+                            powder, shot, shot
+                        ),
+                        "vs_eureka:${prefix}_${ball}_cannonball", 4, "cannonballs"
+                    )
+                )
+            }
         }
 
         return root
