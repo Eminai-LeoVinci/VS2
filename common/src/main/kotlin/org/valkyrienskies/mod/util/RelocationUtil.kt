@@ -2,6 +2,7 @@ package org.valkyrienskies.mod.util
 
 import net.minecraft.core.BlockPos
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.server.level.ServerLevel
 import net.minecraft.world.Clearable
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.block.Block
@@ -13,6 +14,7 @@ import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity
 import net.minecraft.world.level.block.state.BlockState
 import net.minecraft.world.level.chunk.LevelChunk
 import org.valkyrienskies.core.api.ships.ServerShip
+import org.valkyrienskies.mod.compat.voxy.VoxyLodRefresh
 
 val AIR = Blocks.AIR.defaultBlockState()
 
@@ -32,6 +34,15 @@ fun relocateBlock(
 ) {
     var state = fromChunk.getBlockState(from)
     val entity = fromChunk.getBlockEntity(from)
+
+    // Voxy voxelises a chunk once, when it is ingested, and never revisits it. Eureka takes a ship apart
+    // one relocation at a time, and it does so wherever she happened to die -- routinely inside the
+    // server's simulation distance but well outside the client's render distance, so the client never
+    // reloads those chunks and the LOD never learns the hull is there. The ship simply vanishes at range.
+    // Both ends are noted; whichever one is the shipyard is filtered out when the batch is flushed.
+    (fromChunk.level as? ServerLevel)?.let { VoxyLodRefresh.mark(it, fromChunk.pos.x, fromChunk.pos.z) }
+    (toChunk.level as? ServerLevel)?.let { VoxyLodRefresh.mark(it, toChunk.pos.x, toChunk.pos.z) }
+
 	val level = toChunk.level
 	
     val tag = entity?.let {
@@ -57,10 +68,47 @@ fun relocateBlock(
         tag
     }
 
+    // Kept unrotated for the POI bookkeeping below, which has to describe what was actually at `from`.
+    val originalState = state
+    val previousToState = toChunk.getBlockState(to)
+
     state = state.rotate(rotation)
 
-    fromChunk.setBlockState(from, AIR, false)
+    // isMoving = TRUE on the removal, because that is exactly what this is: the block is being MOVED, not
+    // broken. Vanilla gates a lot of "my neighbour just disappeared" behaviour on this flag -- it is the
+    // same contract a piston uses. With it false, taking a ship apart destroyed redstone: removing one wire
+    // ran RedStoneWireBlock.onRemove -> updateNeighborsAt -> the neighbouring wire.s canSurvive, still in the
+    // shipyard, whose supporting deck block had ALREADY been relocated out -- so it found air beneath itself
+    // and popped, dropping its item INTO the shipyard. Those drops only became visible when the ship.s
+    // entities were moved out at the end, which is why it read as "disassembly breaks redstone at random".
+    // (Stack-trace confirmed 2026-08-26; the survivors were simply the wires whose support had not moved yet.)
+    fromChunk.setBlockState(from, AIR, true)
     toChunk.setBlockState(to, state, false)
+
+    // Keep the point-of-interest index in step with the blocks we just moved.
+    //
+    // Vanilla does this from Level.setBlock, and these are CHUNK-level writes that deliberately bypass it --
+    // so without this call the POI manager is never told a workstation moved. Both halves go wrong, and both
+    // were visible in game:
+    //
+    //  - Assembling left a STALE record behind at the old world position. Villagers went on treating it as a
+    //    live job site: they would walk right past an adjacent bench to claim a helm that no longer existed,
+    //    stand at nothing, and never be assigned a profession -- and any villager already employed there kept
+    //    the job forever, because ValidateNearbyPoi asks the POI manager rather than the world, so the memory
+    //    was never invalidated and LoseJobOnSiteLoss never fired. That is the villager still wearing a
+    //    Crewman's coat after its wheel was broken.
+    //  - Disassembling registered NO record at the new world position, so a helm that had been part of a ship
+    //    was invisible to every villager. Placing a second helm beside it worked instantly, which is the
+    //    clearest possible statement that the block was fine and the index was not.
+    //
+    // Applies to every POI block a ship carries -- beds, bells, lodestones and every workstation -- not just
+    // ours. (1.21.1 names this Level.onBlockStateChange; later versions renamed it
+    // updatePOIOnBlockStateChange.) isClientSide guards it because the client's implementation is a no-op
+    // anyway.
+    if (!level.isClientSide) {
+        level.onBlockStateChange(from, originalState, AIR)
+        level.onBlockStateChange(to, previousToState, state)
+    }
 
     if (doUpdate) {
         updateBlock(level, from, to, state)
