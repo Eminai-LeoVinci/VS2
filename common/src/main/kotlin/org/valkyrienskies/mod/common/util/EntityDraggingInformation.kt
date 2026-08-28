@@ -55,6 +55,14 @@ class EntityDraggingInformation {
     var cachedLastPosition: Vector3dc? = null
     var restoreCachedLastPosition = false
 
+    // Per-tick memo of the foot-region ship candidate query (see EntityShipCollisionUtils.shipsNearEntityFeet):
+    // walk-anim, the drag stamp, and the standing-on probes all shared up to 4 independent spatial queries per
+    // entity per tick -- now one, reused within the tick. Keyed by gameTime + level (level guards a same-tick
+    // dimension change); client and server entities are distinct instances, so one field set suffices.
+    var footShipsQueryTick: Long = Long.MIN_VALUE
+    var footShipsQueryLevel: Any? = null
+    var footShipsQueryResult: List<Ship> = emptyList()
+
     var serverRelativePlayerPosition: Vector3dc? = null
     var serverRelativePlayerYaw: Double? = null
 
