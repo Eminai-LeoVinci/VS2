@@ -8,6 +8,8 @@ import net.minecraft.nbt.CompoundTag
 import net.minecraft.server.level.ServerLevel
 import net.minecraft.util.RandomSource
 import net.minecraft.world.Clearable
+import net.minecraft.world.entity.decoration.HangingEntity
+import net.minecraft.world.entity.decoration.LeashFenceKnotEntity
 import net.minecraft.world.level.ChunkPos
 import net.minecraft.world.level.Level
 import net.minecraft.world.level.LevelAccessor
@@ -23,6 +25,7 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlac
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessor
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessorType
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate
+import net.minecraft.world.phys.AABB
 import net.minecraft.world.phys.shapes.BitSetDiscreteVoxelShape
 import net.minecraft.world.phys.shapes.DiscreteVoxelShape
 import org.joml.Quaterniond
@@ -54,6 +57,7 @@ import org.valkyrienskies.mod.common.util.toJOML
 import org.valkyrienskies.mod.common.util.toJOMLD
 import org.valkyrienskies.mod.common.vsCore
 import org.valkyrienskies.mod.common.yRange
+import org.valkyrienskies.mod.compat.voxy.VoxyLodRefresh
 import org.valkyrienskies.mod.util.StructureTemplateFillFromVoxelSet
 import org.valkyrienskies.mod.util.logger
 import org.valkyrienskies.mod.util.relocateBlock
@@ -309,6 +313,13 @@ object ShipAssembler {
         }
         initSkyLightForShip(level, moveDestPositions)
 
+        // ========== Carrying Attached Entities
+        // Only when the originals are actually leaving: a copy leaves the source structure standing, so the
+        // frames hanging on it are still supported and belong exactly where they are.
+        if (removeOriginal) {
+            carryBlockAttachedEntities(level, blocks.toSet(), minStructurePos, maxStructurePos, cornerOfShip)
+        }
+
         // ========== Resume Chunk Updates
         val timeAtExecution = level.server.tickCount
         level.server.executeIf(
@@ -357,6 +368,14 @@ object ShipAssembler {
                 }
             }
         }
+
+        // Voxy only rebuilds a chunk's LOD when that chunk is ingested, and assembly empties world
+        // chunks that a distant client will never reload -- so the hull it just lost goes on standing
+        // in the LOD next to the real ship, and only clears if someone flies out and reloads it. These
+        // are the same columns the chunk-update packets above already cover: source and destination,
+        // with the shipyard end filtered out when the batch is flushed, so one call is right whichever
+        // direction the blocks moved.
+        chunkPoses.forEach { VoxyLodRefresh.mark(level, it) }
 
         return MoveContext(true, fromCenter, centerOfShip)
     }
@@ -626,6 +645,8 @@ object ShipAssembler {
                 initSkyLightForShip(level, destPositions2)
             }
 
+            carryBlockAttachedEntities(level, filteredBlocks.toSet(), pending.minB, pending.maxB, cornerOfShip)
+
             // Set kinematics
             val posOffset = Vector3d(pending.toShip.inertiaData.centerOfMass)
                 .sub(Vector3d(centerOfShip))
@@ -709,12 +730,25 @@ object ShipAssembler {
         }
         if (deleteBlocks) {
             val aabb = ship.shipAABB ?: return 0
+            // The same flags the bulk removal in assembleToShip uses, and for the same reasons. Flag 2 alone
+            // (what this used, borrowed from /fill) leaves neighbour shape updates on, so taking a hull apart
+            // block by block knocks every ladder, door, lantern and torch off whatever it was attached to on
+            // the way past -- and each one drops as an item. For a ship being deleted because its contents
+            // were saved somewhere first, that is a duplication bug: the fixtures come back with the ship AND
+            // litter the sea where it used to be.
+            val flags = Block.UPDATE_CLIENTS or Block.UPDATE_KNOWN_SHAPE or
+                Block.UPDATE_SUPPRESS_DROPS or Block.UPDATE_MOVE_BY_PISTON
+            val cursor = BlockPos.MutableBlockPos()
             aabb.forEach { x, y, z ->
-                if (dropBlocks)
-                    level.destroyBlock(BlockPos(x, y, z), true)
-                else
-                    // Not sure if 2 is what we want, but it's what /fill uses
-                    level.setBlock(BlockPos(x, y, z), Blocks.AIR.defaultBlockState(), 2)
+                cursor.set(x, y, z)
+                if (dropBlocks) {
+                    level.destroyBlock(cursor, true)
+                } else {
+                    // Empty containers before the block goes. SUPPRESS_DROPS stops the BLOCK dropping itself;
+                    // what is inside it is a separate question, and one a chest answers by spilling.
+                    (level.getBlockEntity(cursor) as? Clearable)?.clearContent()
+                    level.setBlock(cursor.immutable(), Blocks.AIR.defaultBlockState(), flags)
+                }
             }
         }
 
@@ -739,6 +773,63 @@ object ShipAssembler {
 
         // getType is used for referencing this processor from a datapack, which we don't need
         override fun getType(): StructureProcessorType<*>? = null
+    }
+
+    /**
+     * Carries item frames, glow item frames, paintings and leash knots onto the ship along with the block each
+     * one is attached to.
+     *
+     * These are ENTITIES, not blocks, so the voxel set an assembly copies never contains them: the wall goes to
+     * the shipyard and the frame stays behind at its old coordinates, now hanging on nothing.
+     * [HangingEntity.tick] re-runs its survives() check every 100 ticks, finds no support, and discards
+     * itself with a dropItem -- so a few seconds after the ship sails the frame and its contents are lying on
+     * the ground where the hull used to be.
+     *
+     * VS2 already intends these to live inside the ship: the vs_entities data pairs item_frame,
+     * glow_item_frame, painting and leash_knot to valkyrienskies:shipyard, and the shipyard_entities mixins
+     * render, collide and section them there. Nothing ever moved them there, because the generic
+     * world-to-shipyard transfer keys off position CHANGES and a block-attached entity never moves on its own.
+     * So carry them explicitly, by the same integer translation the blocks take.
+     *
+     * Only entities whose SUPPORT assembled are carried. For a hanging entity that support is the block BEHIND
+     * it, not the one it occupies -- the entity itself hangs in the air block in front of the wall, which is
+     * never part of the ship. Leash knots are the exception: they sit in the fence they are tied to. (On
+     * 1.20.1 a leash knot IS a HangingEntity -- the BlockAttachedEntity split arrives in 1.20.5 -- so the
+     * knot is told apart by its own class rather than by inheritance.)
+     *
+     * Must run AFTER the destination blocks are placed, so nothing is briefly unsupported at either end.
+     */
+    private fun carryBlockAttachedEntities(
+        level: ServerLevel,
+        blocks: Set<BlockPos>,
+        minStructurePos: BlockPos,
+        maxStructurePos: BlockPos,
+        cornerOfShip: BlockPos
+    ) {
+        val dx = cornerOfShip.x - minStructurePos.x
+        val dy = cornerOfShip.y - minStructurePos.y
+        val dz = cornerOfShip.z - minStructurePos.z
+        if (dx == 0 && dy == 0 && dz == 0) return
+
+        // Inflated a block on every side: a hanging entity occupies the air block in FRONT of its wall, so one
+        // mounted on an outward-facing hull face sits just outside the structure's own bounds.
+        val searchBox = AABB(
+            minStructurePos.x - 1.0, minStructurePos.y - 1.0, minStructurePos.z - 1.0,
+            maxStructurePos.x + 2.0, maxStructurePos.y + 2.0, maxStructurePos.z + 2.0
+        )
+
+        for (entity in level.getEntitiesOfClass(HangingEntity::class.java, searchBox)) {
+            if (entity.isRemoved) continue
+
+            val anchor = entity.pos
+            val support = if (entity is LeashFenceKnotEntity) anchor else anchor.relative(entity.direction.opposite)
+            if (!blocks.contains(support)) continue
+
+            // setPos on a HangingEntity re-derives its anchor BlockPos and bounding box from the
+            // coordinates given, so aiming at the centre of the destination block moves the whole thing. A raw
+            // position write would leave the anchor -- and so the survives() check -- pointing at the old block.
+            entity.setPos(anchor.x + dx + 0.5, anchor.y + dy + 0.5, anchor.z + dz + 0.5)
+        }
     }
 
     // Pre-computed "all sky light 15" DataLayer template (2048 bytes, every nibble = 0xF).
