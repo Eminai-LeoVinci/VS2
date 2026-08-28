@@ -40,6 +40,10 @@ public abstract class MixinPOIManager implements OfLevel {
     @Shadow
     public abstract Stream<PoiRecord> getInChunk(Predicate<PoiType> predicate, ChunkPos chunkPos, Occupancy occupancy);
 
+    // Shipyard records are indexed and searched normally again -- see the ship_job_sites mixins, which supply
+    // the half this class was always missing: the goals that CONSUME a job site now compare against its world
+    // position instead of its raw shipyard one.
+
     /**
      * @author Tomato
      * @reason Allows for ships to be considered as a valid POI, also this method sucks anyway.
