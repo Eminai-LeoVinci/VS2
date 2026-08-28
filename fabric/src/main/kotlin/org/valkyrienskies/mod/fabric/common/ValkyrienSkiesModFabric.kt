@@ -43,8 +43,8 @@ import org.valkyrienskies.mod.client.ShipCameraZoom
 import org.valkyrienskies.mod.client.ShipDebugRender
 import org.valkyrienskies.mod.client.ShipGamepad
 import org.valkyrienskies.mod.client.ShipMountPerspective
-import fuzs.forgeconfigapiport.fabric.api.neoforge.v4.NeoForgeConfigRegistry
-import fuzs.forgeconfigapiport.fabric.api.neoforge.v4.NeoForgeModConfigEvents
+import fuzs.forgeconfigapiport.fabric.api.v5.ConfigRegistry
+import fuzs.forgeconfigapiport.fabric.api.v5.ModConfigEvents
 import net.neoforged.fml.config.ModConfig
 import org.valkyrienskies.mod.common.ValkyrienSkiesMod
 import org.valkyrienskies.mod.common.itemKey
@@ -152,17 +152,19 @@ class ValkyrienSkiesModFabric : ModInitializer {
         // backend ... NPE with "Cannot set config value without assigned Config object
         // present". Mirrors the Forge-side registration in ValkyrienSkiesModForge.
         //
-        // 1.21.11 port: Forge Config API Port (fcap) is not on the dev runtime
-        // classpath, so guard the whole block. Without fcap the TOMLs are simply
-        // not backed and config values fall back to their compiled-in defaults,
-        // which is fine for the ship-helm milestone. If fcap is restored as a
-        // runtime dependency this block resumes working unchanged.
+        // fcap RENAMED this API between the 1.21.1 and 1.21.11 lines: v4's
+        // neoforge.v4.NeoForgeConfigRegistry and NeoForgeModConfigEvents became v5's
+        // v5.ConfigRegistry and v5.ModConfigEvents. The port kept importing v4, which the
+        // shipped 21.11.x jar does not carry, so this threw NoClassDefFoundError on every
+        // launch and the catch below quietly dropped EVERY core setting to its compiled-in
+        // default -- physics threading included. The catch stays as a real safety net, for a
+        // user genuinely running without fcap installed at all.
         val modId = ValkyrienSkiesMod.MOD_ID
         try {
-            NeoForgeConfigRegistry.INSTANCE.register(modId, ModConfig.Type.STARTUP, VSConfigUpdater.CORE_SERVER_SPEC, "valkyrienskies-core-server.toml")
-            NeoForgeConfigRegistry.INSTANCE.register(modId, ModConfig.Type.SERVER, VSConfigUpdater.SERVER_SPEC, "valkyrienskies-server.toml")
-            NeoForgeConfigRegistry.INSTANCE.register(modId, ModConfig.Type.COMMON, VSConfigUpdater.COMMON_SPEC, "valkyrienskies-common.toml")
-            NeoForgeConfigRegistry.INSTANCE.register(modId, ModConfig.Type.CLIENT, VSConfigUpdater.CLIENT_SPEC, "valkyrienskies-client.toml")
+            ConfigRegistry.INSTANCE.register(modId, ModConfig.Type.STARTUP, VSConfigUpdater.CORE_SERVER_SPEC, "valkyrienskies-core-server.toml")
+            ConfigRegistry.INSTANCE.register(modId, ModConfig.Type.SERVER, VSConfigUpdater.SERVER_SPEC, "valkyrienskies-server.toml")
+            ConfigRegistry.INSTANCE.register(modId, ModConfig.Type.COMMON, VSConfigUpdater.COMMON_SPEC, "valkyrienskies-common.toml")
+            ConfigRegistry.INSTANCE.register(modId, ModConfig.Type.CLIENT, VSConfigUpdater.CLIENT_SPEC, "valkyrienskies-client.toml")
 
             // Propagate TOML changes (first-load + reload on external edits) back into the
             // in-memory VsiConfigModel so things that read the Kotlin vars pick up changes.
@@ -173,8 +175,8 @@ class ValkyrienSkiesModFabric : ModInitializer {
                 val loaded = config.loadedConfig?.config() ?: return
                 VSConfigUpdater.applyFromConfigLoad(spec) { key -> loaded.get<Any?>(key) }
             }
-            NeoForgeModConfigEvents.loading(modId).register { applyConfig(it) }
-            NeoForgeModConfigEvents.reloading(modId).register { applyConfig(it) }
+            ModConfigEvents.loading(modId).register { applyConfig(it) }
+            ModConfigEvents.reloading(modId).register { applyConfig(it) }
         } catch (t: Throwable) {
             org.apache.logging.log4j.LogManager.getLogger("ValkyrienSkies").warn(
                 "Forge Config API Port unavailable; VS2 config TOMLs disabled, using defaults.", t
