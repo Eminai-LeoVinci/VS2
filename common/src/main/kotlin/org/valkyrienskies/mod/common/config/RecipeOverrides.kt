@@ -473,10 +473,15 @@ object RecipeOverrides {
         // substitution: netherite is smithed WITH gold, so gold in the corners is the material already in
         // its lineage, and it keeps the most expensive round in the game visibly the most expensive.
         //
-        // Copper has no nugget on 1.21.1 either (its nugget arrives with the Copper Age drop), so it takes
-        // raw copper in the corners by the same no-nugget rule netherite follows.
+        // Copper takes IRON nuggets, which makes it the one round in the family that is an alloy rather
+        // than one metal in two grades. That is deliberate on both counts. Copper on its own is soft, and
+        // a soft ball spreads against a hull instead of going through it; a little iron worked into the
+        // cast is what makes the shot worth firing. And it closes the only version split left in the
+        // recipe book -- copper has no nugget before the Copper Age drop, so 1.20.1 and 1.21.1 were
+        // spending raw copper where 1.21.11 spent a nugget, and the same round cost a different thing
+        // depending on which game you were playing. Iron nuggets exist in all three.
         for ((ball, ingot, corner) in listOf(
-            Triple("copper", "minecraft:copper_ingot", "minecraft:raw_copper"),
+            Triple("copper", "minecraft:copper_ingot", "minecraft:iron_nugget"),
             Triple("iron", "minecraft:iron_ingot", "minecraft:iron_nugget"),
             Triple("gold", "minecraft:gold_ingot", "minecraft:gold_nugget"),
             Triple("netherite", "minecraft:netherite_ingot", "minecraft:raw_gold")
