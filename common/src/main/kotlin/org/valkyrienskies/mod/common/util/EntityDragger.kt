@@ -47,6 +47,18 @@ object EntityDragger {
      */
     fun dragEntitiesWithShips(entities: Iterable<Entity>, preTick: Boolean = false) {
         for (entity in entities) {
+            // A removed entity must never be dragged, and moving one is not merely pointless -- it
+            // corrupts the level's own bookkeeping. setPos asks the entity's old section to hand it over,
+            // the section no longer holds it because removal already took it out, and the handover indexes
+            // at -1: "Index -1 out of bounds for length 10", thrown out of ClassInstanceMultiMap.remove
+            // deep inside vanilla, with nothing in the trace to say which entity did it.
+            //
+            // Vanilla never hits this because it does not move entities outside their own tick. This loop
+            // walks getAllEntities() and moves whatever is standing on a ship, so anything discarded or
+            // killed earlier in the same tick is still in that iterable and still carries its dragging
+            // information -- and a busy deck removes entities constantly: seats killed as gun crews stand
+            // down, crew discarded into a bottle, casualties.
+            if (entity.isRemoved) continue
             val entityDraggingInformation = (entity as? IEntityDraggingInformationProvider)?.draggingInformation ?: continue
 
             // === 2.4.115: Region-based gliding carry control ===
