@@ -11,6 +11,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.valkyrienskies.core.api.ships.ClientShip;
 import org.valkyrienskies.mod.common.VSGameUtilsKt;
+import org.valkyrienskies.mod.common.entity.ShipMountedToData;
 
 @Mixin(EntityRenderer.class)
 public class MixinEntityRenderer {
@@ -29,7 +30,24 @@ public class MixinEntityRenderer {
     void revertShipRotation(PoseStack matrices, float f, float g, float h, Operation<Void> original,
         @Local(argsOnly = true) Entity entity) {
         original.call(matrices, f, g, h);
-        final ClientShip ship = (ClientShip)VSGameUtilsKt.getLoadedShipManagingPos(entity.level(), entity.blockPosition());
+        ClientShip ship = (ClientShip)VSGameUtilsKt.getLoadedShipManagingPos(entity.level(), entity.blockPosition());
+        if (ship == null) {
+            // A MOUNTED rider never had a ship here, and it is the case that needed the correction most.
+            //
+            // MixinEntityRenderDispatcher puts an entity into its ship's frame when getShipMountedToData
+            // answers -- that is, whenever it rides a ShipMountingEntity -- and that rotation reaches the
+            // name tag along with the body. But a rider LIVES at a world position, while the lookup above
+            // resolves SHIPYARD positions, so for the one class of entity the ship transform is actually
+            // applied to, it returned null and the tag was left rotating with the hull. Standing on a deck
+            // looked fine; sitting in a seat on the same deck did not.
+            //
+            // So ask the question the dispatcher asked. The partial tick is irrelevant here: only the ship
+            // is wanted, and its render transform is the same object either way.
+            final ShipMountedToData mounted = VSGameUtilsKt.getShipMountedToData(entity, null);
+            if (mounted != null) {
+                ship = (ClientShip) mounted.getShipMountedTo();
+            }
+        }
         if (ship != null) {
             matrices.mulPose(new Quaternionf(ship.getRenderTransform().getShipToWorldRotation()).invert());
         }
