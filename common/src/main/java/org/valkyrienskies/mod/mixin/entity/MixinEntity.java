@@ -1,5 +1,7 @@
 package org.valkyrienskies.mod.mixin.entity;
 
+import org.slf4j.LoggerFactory;
+import net.minecraft.world.level.block.Blocks;
 import static org.valkyrienskies.mod.common.util.VectorConversionsMCKt.toJOML;
 
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
@@ -451,6 +453,45 @@ public abstract class MixinEntity implements IEntityDraggingInformationProvider 
      * @reason Without this and that other mixin, things don't render correctly at high speeds.
      * @see org.valkyrienskies.mod.mixin.client.renderer.MixinEntityRenderer
      */
+    /**
+     * Never hand back a null cached block state.
+     *
+     * Vanilla's getInBlockState refills a null cache from {@code level.getBlockState(blockPosition())}
+     * and its callers assume the result is never null -- {@code onClimbable} goes straight into
+     * {@code blockstate.is(BlockTags.CLIMBABLE)} with no check at all, and crashed there while a player
+     * was walking onto a ship.
+     *
+     * Two things make that reachable here and not in a vanilla game. This mod deliberately NULLS that
+     * cache in three places -- the ladder search, and both halves of EntityRenderPosition -- so an entity
+     * near a ship refills it far more often than vanilla ever would, and it refills it at whatever block
+     * position is set at that instant, which during those windows is a shipyard one. And the refill is a
+     * chunk read, on packs where chunk loading is threaded.
+     *
+     * So the field is a cache with a nullable producer and non-null consumers, and the honest fix at the
+     * boundary is to make the getter keep the promise its callers already rely on. Air is the right
+     * answer for a block that could not be read: it is what an unloaded position means everywhere else,
+     * and it is what the position would have reported a tick earlier or later.
+     *
+     * Logged once so a recurrence is diagnosable rather than silent -- if this fires often, the producer
+     * is worth chasing rather than papering over.
+     */
+    @Inject(method = "getInBlockState", at = @At("RETURN"), cancellable = true)
+    private void vs$neverNullFeetBlockState(final CallbackInfoReturnable<BlockState> cir) {
+        if (cir.getReturnValue() == null) {
+            if (!vs$warnedNullFeetState) {
+                vs$warnedNullFeetState = true;
+                LoggerFactory.getLogger("valkyrienskies").warn(
+                    "getInBlockState was null at {} for {}; substituting air. "
+                        + "This is logged once per session.",
+                    ((Entity) (Object) this).blockPosition(), ((Entity) (Object) this).getName().getString());
+            }
+            cir.setReturnValue(Blocks.AIR.defaultBlockState());
+        }
+    }
+
+    @Unique
+    private boolean vs$warnedNullFeetState = false;
+
     @Inject(method = "shouldRender", at = @At("HEAD"), cancellable = true)
     private void onShouldRender(double d, double e, double f, CallbackInfoReturnable<Boolean> cir) {
         if (this.draggingInformation.isEntityBeingDraggedByAShip()) {
