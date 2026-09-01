@@ -10,6 +10,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
 import org.jetbrains.annotations.NotNull;
 import org.joml.Vector3d;
@@ -45,6 +46,30 @@ public abstract class StructureTemplateMixin implements StructureTemplateFillFro
     @Shadow
     private static void addToLists(StructureTemplate.StructureBlockInfo blockInfo, List<StructureTemplate.StructureBlockInfo> basicBlocks, List<StructureTemplate.StructureBlockInfo> blocksWithEntities, List<StructureTemplate.StructureBlockInfo> specialBlocks) {}
 
+    /**
+     * The state a block should have once it is aboard a ship: the same block, minus any water it was holding.
+     *
+     * A fence, stair or slab standing in the sea is waterlogged, and that flag is part of its blockstate -- so
+     * copying the state verbatim carried a cube of ocean into the shipyard with every one of them. The ship
+     * then sailed around with water trapped in its rails, and the copies rendered as untextured vanilla water
+     * under a shaderpack because the sea they came from was nowhere near them.
+     *
+     * Stripped HERE because this is the one place a world blockstate becomes a template blockstate, and both
+     * paths that matter run through it: assembling a hull, and capturing one to a bottle, a blueprint or a
+     * pirate template. Fixing it at the two callers instead would have left whichever one was forgotten
+     * quietly shipping water.
+     *
+     * Only the flag is cleared. The block itself is the player's and comes along exactly as built.
+     */
+    @Unique
+    private static BlockState vs$dry(BlockState state) {
+        if (state.hasProperty(BlockStateProperties.WATERLOGGED)
+            && state.getValue(BlockStateProperties.WATERLOGGED)) {
+            return state.setValue(BlockStateProperties.WATERLOGGED, false);
+        }
+        return state;
+    }
+
     @Unique
     public void vs$fillFromVoxelSet(@NotNull Level level, @NotNull Iterable<BlockPos> voxels,
         @NotNull List<ServerShip> shipsBeingCopied, @NotNull Map<Long, Vector3d> centerPositions,
@@ -56,7 +81,7 @@ public abstract class StructureTemplateMixin implements StructureTemplateFillFro
 
         for (BlockPos currentWorldPos : voxels) {
             BlockPos relativePos = currentWorldPos.subtract(min);
-            BlockState blockState = level.getBlockState(currentWorldPos);
+            BlockState blockState = vs$dry(level.getBlockState(currentWorldPos));
 
             BlockEntity blockEntity = level.getBlockEntity(currentWorldPos);
             StructureTemplate.StructureBlockInfo blockInfo;
