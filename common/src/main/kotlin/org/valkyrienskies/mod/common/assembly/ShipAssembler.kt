@@ -20,6 +20,7 @@ import net.minecraft.world.level.block.Blocks
 import net.minecraft.world.level.block.LiquidBlockContainer
 import net.minecraft.world.level.block.entity.RandomizableContainerBlockEntity
 import net.minecraft.world.level.block.state.BlockState
+import net.minecraft.world.level.block.state.properties.BlockStateProperties
 import net.minecraft.world.level.chunk.LevelChunk
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructurePlaceSettings
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureProcessor
@@ -260,6 +261,7 @@ object ShipAssembler {
             // doors, tall flowers) before their first half became a barrier -- duplicating them.
             val flags = Block.UPDATE_CLIENTS or Block.UPDATE_KNOWN_SHAPE or Block.UPDATE_SUPPRESS_DROPS or Block.UPDATE_MOVE_BY_PISTON
             for (pos in blocks) {
+                val vacated = vacatedBy(level.getBlockState(pos))
                 level.getBlockEntity(pos)?.let {
                     if (it is Clearable) {
                         Clearable.tryClear(it)
@@ -270,7 +272,7 @@ object ShipAssembler {
                     // Without this, copycats still drop their items
                     level.removeBlockEntity(pos)
                 }
-                level.setBlock(pos, Blocks.AIR.defaultBlockState(), flags)
+                level.setBlock(pos, vacated, flags)
             }
             // Batch light updates after all blocks are removed
             for (pos in blocks) {
@@ -583,14 +585,14 @@ object ShipAssembler {
                         level.removeBlockEntity(srcPos)
                     }
                     val srcChunk = level.getChunkAt(srcPos)
-                    srcChunk.setBlockState(srcPos, Blocks.AIR.defaultBlockState(), false)
+                    srcChunk.setBlockState(srcPos, vacatedBy(state), false)
 
                     // Place at destination using chunk-level setBlockState directly.
                     // This bypasses Level.setBlock's sendBlockUpdated + onBlockStateChange
                     // which are unnecessary while dest chunks are stalled.
                     // LevelChunk.setBlockState handles block entity creation internally.
                     val destChunk = level.getChunkAt(destPos)
-                    destChunk.setBlockState(destPos, state, false)
+                    destChunk.setBlockState(destPos, dried(state), false)
                     beTag?.let { tag ->
                         tag.putInt("x", destPos.x)
                         tag.putInt("y", destPos.y)
@@ -612,11 +614,12 @@ object ShipAssembler {
                 )
 
                 for (pos in filteredBlocks) {
+                    val vacated = vacatedBy(level.getBlockState(pos))
                     level.getBlockEntity(pos)?.let {
                         if (it is Clearable) Clearable.tryClear(it) else it.load(CompoundTag())
                         level.removeBlockEntity(pos)
                     }
-                    level.setBlock(pos, Blocks.AIR.defaultBlockState(), removeFlags)
+                    level.setBlock(pos, vacated, removeFlags)
                 }
                 for (pos in filteredBlocks) {
                     level.chunkSource.lightEngine.checkBlock(pos)
@@ -713,6 +716,36 @@ object ShipAssembler {
 
         return results
     }
+
+    /**
+     * What to leave behind where a ship block used to stand.
+     *
+     * Air, except where the block was holding water: a waterlogged fence taken out of the sea has to leave
+     * SEA behind it, not a hole. Setting air there punched a block-shaped bubble in the water for every rail
+     * and stair the hull owned, which vanilla then had to flow back into one tick at a time -- visible, slow,
+     * and on a big ship enough of them to look like the assembly had bitten a chunk out of the ocean.
+     *
+     * This is the other half of StructureTemplateMixin.vs$dry: that one keeps the water out of the ship, this
+     * one keeps it in the world. The two have to agree, or the water is either duplicated or destroyed.
+     */
+    private fun vacatedBy(state: BlockState): BlockState =
+        if (state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)) {
+            Blocks.WATER.defaultBlockState()
+        } else {
+            Blocks.AIR.defaultBlockState()
+        }
+
+    /**
+     * The same block, minus any water it was holding -- the Kotlin twin of
+     * StructureTemplateMixin.vs$dry, needed here because the small-ship fast path copies states directly
+     * instead of going through a template.
+     */
+    private fun dried(state: BlockState): BlockState =
+        if (state.hasProperty(BlockStateProperties.WATERLOGGED) && state.getValue(BlockStateProperties.WATERLOGGED)) {
+            state.setValue(BlockStateProperties.WATERLOGGED, false)
+        } else {
+            state
+        }
 
     @Suppress("unused")
     fun isValidShipBlock(state: BlockState?) : Boolean {
